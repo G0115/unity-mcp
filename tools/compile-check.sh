@@ -74,6 +74,14 @@ ver_major=$(echo "$UNITY_VERSION" | cut -d. -f1)
 ver_minor=$(echo "$UNITY_VERSION" | cut -d. -f2)
 ver_patch=$(echo "$UNITY_VERSION" | cut -d. -f3 | sed 's/[a-z].*//')
 
+langversion_for() {
+  # Unity language ladder: 2019.4 = C# 7.3, 2020.x = C# 8, 2021+ = C# 9.
+  if [ "$ver_major" -lt 2020 ]; then echo 7.3
+  elif [ "$ver_major" -eq 2020 ]; then echo 8.0
+  else echo 9.0
+  fi
+}
+
 version_defines() {
   local rel rM rm
   for rel in $UNITY_RELEASES; do
@@ -118,7 +126,7 @@ compile() {
 
   {
     echo "-target:library"
-    echo "-langversion:9.0"
+    echo "-langversion:$(langversion_for)"
     echo "-nostdlib+"
     echo "-preferreduilang:en-US"
     echo "-nowarn:CS1701,CS1702"      # benign netstandard facade version unification

@@ -5,9 +5,14 @@
   "$defaultVersionComment": "Unity version used when CI runs the narrow matrix (default PR feedback path). Must be one of the ids in 'versions' below. Today's pick is 6.0 LTS — the version most users target. The 'floor' role still identifies the package's minimum supported version separately.",
   "versions": [
     {
-      "id": "2021.3.45f2",
+      "id": "2019.4.40f1",
       "role": "floor",
-      "notes": "Package minimum (matches MCPForUnity/package.json 'unity' field and TestProjects/UnityMCPTests/ProjectSettings/ProjectVersion.txt). Legacy branch: all UNITY_2022_*/UNITY_6000_* flags OFF."
+      "notes": "Package minimum (matches MCPForUnity/package.json 'unity' field). Language level C# 7.3; no ProfilerRecorder/UI-Toolkit-runtime/UIDocument APIs (gated behind UNITY_2020_2_OR_NEWER / UNITY_2021_1_OR_NEWER). GameCI image ubuntu-2019.4.40f1-base-3 verified."
+    },
+    {
+      "id": "2021.3.45f2",
+      "role": "lts",
+      "notes": "First LTS with built-in UI Toolkit runtime and ProfilerRecorder; all UNITY_2022_*/UNITY_6000_* flags OFF."
     },
     {
       "id": "2022.3.62f1",
