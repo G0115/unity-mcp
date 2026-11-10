@@ -96,12 +96,19 @@ namespace MCPForUnity.Editor.Tools.Animation
             int layerIndex = @params["layerIndex"]?.ToObject<int>() ?? 0;
             string blendTypeStr = @params["blendType"]?.ToString()?.ToLowerInvariant() ?? "simpledirectional2d";
 
-            BlendTreeType blendType = blendTypeStr switch
+            BlendTreeType blendType;
+            switch (blendTypeStr)
             {
-                "freeformdirectional2d" => BlendTreeType.FreeformDirectional2D,
-                "freeformcartesian2d" => BlendTreeType.FreeformCartesian2D,
-                _ => BlendTreeType.SimpleDirectional2D
-            };
+                case "freeformdirectional2d":
+                    blendType = BlendTreeType.FreeformDirectional2D;
+                    break;
+                case "freeformcartesian2d":
+                    blendType = BlendTreeType.FreeformCartesian2D;
+                    break;
+                default:
+                    blendType = BlendTreeType.SimpleDirectional2D;
+                    break;
+            }
 
             var layers = controller.layers;
             if (layerIndex < 0 || layerIndex >= layers.Length)

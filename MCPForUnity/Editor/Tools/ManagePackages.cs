@@ -19,11 +19,11 @@ namespace MCPForUnity.Editor.Tools
     public static class ManagePackages
     {
         // Pending async requests keyed by job ID
-        private static readonly Dictionary<string, Request> PendingRequests = new();
+        private static readonly Dictionary<string, Request> PendingRequests = new Dictionary<string, Request>();
 
         // Pending list/search requests keyed by job ID
-        private static readonly Dictionary<string, ListRequest> PendingListRequests = new();
-        private static readonly Dictionary<string, SearchRequest> PendingSearchRequests = new();
+        private static readonly Dictionary<string, ListRequest> PendingListRequests = new Dictionary<string, ListRequest>();
+        private static readonly Dictionary<string, SearchRequest> PendingSearchRequests = new Dictionary<string, SearchRequest>();
 
         public static object HandleCommand(JObject @params)
         {
@@ -212,13 +212,22 @@ namespace MCPForUnity.Editor.Tools
             }
 
             var serialized = PackageJobManager.ToSerializable(job);
-            string message = job.Status switch
+            string message;
+            switch (job.Status)
             {
-                PackageJobStatus.Running => $"Job {job.JobId} is still running ({job.Operation} '{job.Package}').",
-                PackageJobStatus.Succeeded => $"Job {job.JobId} succeeded ({job.Operation} '{job.Package}').",
-                PackageJobStatus.Failed => $"Job {job.JobId} failed ({job.Operation} '{job.Package}'): {job.Error}",
-                _ => $"Job {job.JobId}: {job.Status}"
-            };
+                case PackageJobStatus.Running:
+                    message = $"Job {job.JobId} is still running ({job.Operation} '{job.Package}').";
+                    break;
+                case PackageJobStatus.Succeeded:
+                    message = $"Job {job.JobId} succeeded ({job.Operation} '{job.Package}').";
+                    break;
+                case PackageJobStatus.Failed:
+                    message = $"Job {job.JobId} failed ({job.Operation} '{job.Package}'): {job.Error}";
+                    break;
+                default:
+                    message = $"Job {job.JobId}: {job.Status}";
+                    break;
+            }
 
             if (job.Status == PackageJobStatus.Running)
             {

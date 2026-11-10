@@ -31,8 +31,8 @@ namespace MCPForUnity.Editor.Services
         private const int MaxJobsToKeep = 10;
         private const long DomainReloadTimeoutMs = 120_000;
 
-        private static readonly object LockObj = new();
-        private static readonly Dictionary<string, PackageJob> Jobs = new();
+        private static readonly object LockObj = new object();
+        private static readonly Dictionary<string, PackageJob> Jobs = new Dictionary<string, PackageJob>();
 
         static PackageJobManager()
         {
@@ -63,12 +63,12 @@ namespace MCPForUnity.Editor.Services
             if (string.IsNullOrWhiteSpace(status))
                 return PackageJobStatus.Running;
 
-            return status.Trim().ToLowerInvariant() switch
+            switch (status.Trim().ToLowerInvariant())
             {
-                "succeeded" => PackageJobStatus.Succeeded,
-                "failed" => PackageJobStatus.Failed,
-                _ => PackageJobStatus.Running
-            };
+                case "succeeded": return PackageJobStatus.Succeeded;
+                case "failed": return PackageJobStatus.Failed;
+                default: return PackageJobStatus.Running;
+            }
         }
 
         private static void TryRestoreFromSessionState()

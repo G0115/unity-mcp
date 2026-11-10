@@ -37,16 +37,16 @@ namespace MCPForUnity.Editor.Helpers
             if (string.IsNullOrEmpty(method))
                 return SearchMethod.ByName;
 
-            return method.ToLowerInvariant() switch
+            switch (method.ToLowerInvariant())
             {
-                "by_name" => SearchMethod.ByName,
-                "by_tag" => SearchMethod.ByTag,
-                "by_layer" => SearchMethod.ByLayer,
-                "by_component" => SearchMethod.ByComponent,
-                "by_path" => SearchMethod.ByPath,
-                "by_id" => SearchMethod.ById,
-                _ => SearchMethod.ByName
-            };
+                case "by_name": return SearchMethod.ByName;
+                case "by_tag": return SearchMethod.ByTag;
+                case "by_layer": return SearchMethod.ByLayer;
+                case "by_component": return SearchMethod.ByComponent;
+                case "by_path": return SearchMethod.ByPath;
+                case "by_id": return SearchMethod.ById;
+                default: return SearchMethod.ByName;
+            }
         }
 
         /// <summary>

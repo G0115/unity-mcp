@@ -198,7 +198,7 @@ namespace MCPForUnity.Editor.Helpers
             foreach (string d in dirsNewestFirst)
             {
                 if (string.IsNullOrEmpty(d)) continue;
-                first ??= d;
+                if (first == null) first = d;
                 if (!string.IsNullOrEmpty(fileName) && fileExists != null && fileExists(d.TrimEnd('/') + "/" + fileName))
                     return d;
             }

@@ -37,7 +37,7 @@ namespace MCPForUnity.Editor.Tools
     /// </summary>
     public static class CommandRegistry
     {
-        private static readonly Dictionary<string, HandlerInfo> _handlers = new();
+        private static readonly Dictionary<string, HandlerInfo> _handlers = new Dictionary<string, HandlerInfo>();
         private static bool _initialized = false;
 
         /// <summary>

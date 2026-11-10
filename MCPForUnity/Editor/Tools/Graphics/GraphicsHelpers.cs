@@ -128,40 +128,40 @@ namespace MCPForUnity.Editor.Tools.Graphics
 
         internal static string GetPipelineName()
         {
-            return RenderPipelineUtility.GetActivePipeline() switch
+            switch (RenderPipelineUtility.GetActivePipeline())
             {
-                RenderPipelineUtility.PipelineKind.Universal => "Universal (URP)",
-                RenderPipelineUtility.PipelineKind.HighDefinition => "High Definition (HDRP)",
-                RenderPipelineUtility.PipelineKind.BuiltIn => "Built-in",
-                RenderPipelineUtility.PipelineKind.Custom => "Custom",
-                _ => "Unknown"
-            };
+                case RenderPipelineUtility.PipelineKind.Universal: return "Universal (URP)";
+                case RenderPipelineUtility.PipelineKind.HighDefinition: return "High Definition (HDRP)";
+                case RenderPipelineUtility.PipelineKind.BuiltIn: return "Built-in";
+                case RenderPipelineUtility.PipelineKind.Custom: return "Custom";
+                default: return "Unknown";
+            }
         }
 
         internal static object ReadSerializedValue(SerializedProperty prop)
         {
-            return prop.propertyType switch
+            switch (prop.propertyType)
             {
-                SerializedPropertyType.Boolean => prop.boolValue,
-                SerializedPropertyType.Integer => prop.type == "long" ? prop.longValue : (object)prop.intValue,
-                SerializedPropertyType.Float => prop.floatValue,
-                SerializedPropertyType.String => prop.stringValue,
-                SerializedPropertyType.Enum => prop.enumValueIndex < prop.enumNames.Length
+                case SerializedPropertyType.Boolean: return prop.boolValue;
+                case SerializedPropertyType.Integer: return prop.type == "long" ? prop.longValue : (object)prop.intValue;
+                case SerializedPropertyType.Float: return prop.floatValue;
+                case SerializedPropertyType.String: return prop.stringValue;
+                case SerializedPropertyType.Enum: return prop.enumValueIndex < prop.enumNames.Length
                     ? prop.enumNames[prop.enumValueIndex]
-                    : (object)prop.enumValueIndex,
-                SerializedPropertyType.ObjectReference => prop.objectReferenceValue != null
+                    : (object)prop.enumValueIndex;
+                case SerializedPropertyType.ObjectReference: return prop.objectReferenceValue != null
                     ? (object)new
                     {
                         name = prop.objectReferenceValue.name,
                         path = AssetDatabase.GetAssetPath(prop.objectReferenceValue)
                     }
-                    : null,
-                SerializedPropertyType.Color => new[] { prop.colorValue.r, prop.colorValue.g, prop.colorValue.b, prop.colorValue.a },
-                SerializedPropertyType.Vector2 => new[] { prop.vector2Value.x, prop.vector2Value.y },
-                SerializedPropertyType.Vector3 => new[] { prop.vector3Value.x, prop.vector3Value.y, prop.vector3Value.z },
-                SerializedPropertyType.LayerMask => prop.intValue,
-                _ => prop.propertyType.ToString()
-            };
+                    : null;
+                case SerializedPropertyType.Color: return new[] { prop.colorValue.r, prop.colorValue.g, prop.colorValue.b, prop.colorValue.a };
+                case SerializedPropertyType.Vector2: return new[] { prop.vector2Value.x, prop.vector2Value.y };
+                case SerializedPropertyType.Vector3: return new[] { prop.vector3Value.x, prop.vector3Value.y, prop.vector3Value.z };
+                case SerializedPropertyType.LayerMask: return prop.intValue;
+                default: return prop.propertyType.ToString();
+            }
         }
 
         internal static bool SetSerializedValue(SerializedProperty prop, JToken value)

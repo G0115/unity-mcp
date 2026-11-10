@@ -453,40 +453,42 @@ namespace MCPForUnity.Editor.Helpers
         private static bool SetViaSerializedProperty(Component component, string propertyName, string normalizedName, JToken value, out string error)
         {
             error = null;
-            using var so = new SerializedObject(component);
-
-            SerializedProperty prop = so.FindProperty(propertyName)
-                                   ?? so.FindProperty(normalizedName);
-            if (prop == null)
+            using (var so = new SerializedObject(component))
             {
-                error = $"SerializedProperty '{propertyName}' not found on component '{component.GetType().Name}'.";
-                return false;
-            }
 
-            if (!SetSerializedPropertyRecursive(prop, value, out error, 0))
-                return false;
-
-            so.ApplyModifiedProperties();
-
-            // Readback verification for ObjectReference — these can silently fail
-            if (prop.propertyType == SerializedPropertyType.ObjectReference
-                && value != null
-                && !(value is JValue jv && jv.Type == JTokenType.Null))
-            {
-                so.Update();
-                var verifyProp = so.FindProperty(propertyName)
-                              ?? so.FindProperty(normalizedName);
-                if (verifyProp != null
-                    && verifyProp.propertyType == SerializedPropertyType.ObjectReference
-                    && verifyProp.objectReferenceValue == null)
+                SerializedProperty prop = so.FindProperty(propertyName)
+                                       ?? so.FindProperty(normalizedName);
+                if (prop == null)
                 {
-                    error = $"Property '{propertyName}' was set but the object reference did not persist. " +
-                            "Check that the referenced object exists and is the correct type.";
+                    error = $"SerializedProperty '{propertyName}' not found on component '{component.GetType().Name}'.";
                     return false;
                 }
-            }
 
-            return true;
+                if (!SetSerializedPropertyRecursive(prop, value, out error, 0))
+                    return false;
+
+                so.ApplyModifiedProperties();
+
+                // Readback verification for ObjectReference — these can silently fail
+                if (prop.propertyType == SerializedPropertyType.ObjectReference
+                    && value != null
+                    && !(value is JValue jv && jv.Type == JTokenType.Null))
+                {
+                    so.Update();
+                    var verifyProp = so.FindProperty(propertyName)
+                                  ?? so.FindProperty(normalizedName);
+                    if (verifyProp != null
+                        && verifyProp.propertyType == SerializedPropertyType.ObjectReference
+                        && verifyProp.objectReferenceValue == null)
+                    {
+                        error = $"Property '{propertyName}' was set but the object reference did not persist. " +
+                                "Check that the referenced object exists and is the correct type.";
+                        return false;
+                    }
+                }
+
+                return true;
+            }
         }
 
         private static bool SetSerializedPropertyRecursive(SerializedProperty prop, JToken value, out string error, int depth)

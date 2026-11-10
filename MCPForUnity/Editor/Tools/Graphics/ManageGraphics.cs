@@ -55,18 +55,18 @@ namespace MCPForUnity.Editor.Tools.Graphics
                             return new ErrorResponse(
                                 "Volume system not available. Requires URP or HDRP (com.unity.render-pipelines.core).");
 
-                        return action switch
+                        switch (action)
                         {
-                            "volume_create" => VolumeOps.CreateVolume(@params),
-                            "volume_add_effect" => VolumeOps.AddEffect(@params),
-                            "volume_set_effect" => VolumeOps.SetEffect(@params),
-                            "volume_remove_effect" => VolumeOps.RemoveEffect(@params),
-                            "volume_get_info" => VolumeOps.GetInfo(@params),
-                            "volume_set_properties" => VolumeOps.SetProperties(@params),
-                            "volume_list_effects" => VolumeOps.ListEffects(@params),
-                            "volume_create_profile" => VolumeOps.CreateProfile(@params),
-                            _ => new ErrorResponse($"Unknown volume action: '{action}'")
-                        };
+                            case "volume_create": return VolumeOps.CreateVolume(@params);
+                            case "volume_add_effect": return VolumeOps.AddEffect(@params);
+                            case "volume_set_effect": return VolumeOps.SetEffect(@params);
+                            case "volume_remove_effect": return VolumeOps.RemoveEffect(@params);
+                            case "volume_get_info": return VolumeOps.GetInfo(@params);
+                            case "volume_set_properties": return VolumeOps.SetProperties(@params);
+                            case "volume_list_effects": return VolumeOps.ListEffects(@params);
+                            case "volume_create_profile": return VolumeOps.CreateProfile(@params);
+                            default: return new ErrorResponse($"Unknown volume action: '{action}'");
+                        }
                     }
 
                     // --- Bake actions (always available, Edit mode only) ---
@@ -122,16 +122,16 @@ namespace MCPForUnity.Editor.Tools.Graphics
                         if (!GraphicsHelpers.HasURP)
                             return new ErrorResponse("Renderer features require URP (Universal Render Pipeline).");
 
-                        return action switch
+                        switch (action)
                         {
-                            "feature_list" => RendererFeatureOps.ListFeatures(@params),
-                            "feature_add" => RendererFeatureOps.AddFeature(@params),
-                            "feature_remove" => RendererFeatureOps.RemoveFeature(@params),
-                            "feature_configure" => RendererFeatureOps.ConfigureFeature(@params),
-                            "feature_toggle" => RendererFeatureOps.ToggleFeature(@params),
-                            "feature_reorder" => RendererFeatureOps.ReorderFeatures(@params),
-                            _ => new ErrorResponse($"Unknown feature action: '{action}'")
-                        };
+                            case "feature_list": return RendererFeatureOps.ListFeatures(@params);
+                            case "feature_add": return RendererFeatureOps.AddFeature(@params);
+                            case "feature_remove": return RendererFeatureOps.RemoveFeature(@params);
+                            case "feature_configure": return RendererFeatureOps.ConfigureFeature(@params);
+                            case "feature_toggle": return RendererFeatureOps.ToggleFeature(@params);
+                            case "feature_reorder": return RendererFeatureOps.ReorderFeatures(@params);
+                            default: return new ErrorResponse($"Unknown feature action: '{action}'");
+                        }
                     }
 
                     // --- Skybox / Environment actions (always available) ---

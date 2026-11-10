@@ -25,7 +25,7 @@ namespace MCPForUnity.Editor.Tools.Profiler
                 // Unity 6+: moved to FrameDebuggerInternal sub-namespace
                 UtilType = Type.GetType("UnityEditorInternal.FrameDebuggerInternal.FrameDebuggerUtility, UnityEditor");
                 // Unity 2021–2022: original location
-                UtilType ??= Type.GetType("UnityEditorInternal.FrameDebuggerUtility, UnityEditor");
+                if (UtilType == null) UtilType = Type.GetType("UnityEditorInternal.FrameDebuggerUtility, UnityEditor");
 
                 if (UtilType == null) return;
 
@@ -49,7 +49,7 @@ namespace MCPForUnity.Editor.Tools.Profiler
                     GetEventDataMethod = UtilType.GetMethod("GetFrameEventData", BindingFlags.Public | BindingFlags.Static,
                                              null, new[] { typeof(int), EventDataType }, null);
                 }
-                GetEventDataMethod ??= UtilType.GetMethod("GetFrameEventData", BindingFlags.Public | BindingFlags.Static);
+                if (GetEventDataMethod == null) GetEventDataMethod = UtilType.GetMethod("GetFrameEventData", BindingFlags.Public | BindingFlags.Static);
 
                 Available = EventCountProp != null && EnableMethod != null;
             }

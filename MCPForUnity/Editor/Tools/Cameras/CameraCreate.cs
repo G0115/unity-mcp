@@ -207,30 +207,32 @@ namespace MCPForUnity.Editor.Tools.Cameras
             if (blendStyle != null || blendDuration >= 0)
             {
                 // Set via SerializedProperty for the DefaultBlend struct
-                using var so = new SerializedObject(brain);
-                var defaultBlendProp = so.FindProperty("DefaultBlend") ?? so.FindProperty("m_DefaultBlend");
-                if (defaultBlendProp != null)
+                using (var so = new SerializedObject(brain))
                 {
-                    if (blendStyle != null)
+                    var defaultBlendProp = so.FindProperty("DefaultBlend") ?? so.FindProperty("m_DefaultBlend");
+                    if (defaultBlendProp != null)
                     {
-                        var styleProp = defaultBlendProp.FindPropertyRelative("Style")
-                                     ?? defaultBlendProp.FindPropertyRelative("m_Style");
-                        if (styleProp != null)
+                        if (blendStyle != null)
                         {
-                            int idx = Array.FindIndex(styleProp.enumNames,
-                                n => n.Equals(blendStyle, StringComparison.OrdinalIgnoreCase));
-                            if (idx >= 0)
-                                styleProp.enumValueIndex = idx;
+                            var styleProp = defaultBlendProp.FindPropertyRelative("Style")
+                                         ?? defaultBlendProp.FindPropertyRelative("m_Style");
+                            if (styleProp != null)
+                            {
+                                int idx = Array.FindIndex(styleProp.enumNames,
+                                    n => n.Equals(blendStyle, StringComparison.OrdinalIgnoreCase));
+                                if (idx >= 0)
+                                    styleProp.enumValueIndex = idx;
+                            }
                         }
+                        if (blendDuration >= 0)
+                        {
+                            var timeProp = defaultBlendProp.FindPropertyRelative("Time")
+                                        ?? defaultBlendProp.FindPropertyRelative("m_Time");
+                            if (timeProp != null)
+                                timeProp.floatValue = blendDuration;
+                        }
+                        so.ApplyModifiedProperties();
                     }
-                    if (blendDuration >= 0)
-                    {
-                        var timeProp = defaultBlendProp.FindPropertyRelative("Time")
-                                    ?? defaultBlendProp.FindPropertyRelative("m_Time");
-                        if (timeProp != null)
-                            timeProp.floatValue = blendDuration;
-                    }
-                    so.ApplyModifiedProperties();
                 }
             }
 

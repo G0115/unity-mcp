@@ -169,14 +169,16 @@ namespace MCPForUnity.Editor.Helpers
             try
             {
                 // Try to make a quick connection to see if it's an MCP for Unity server
-                using var client = new TcpClient();
-                var connectTask = client.ConnectAsync(IPAddress.Loopback, port);
-                if (connectTask.Wait(100)) // 100ms timeout
+                using (var client = new TcpClient())
                 {
-                    // If connection succeeded, it's likely the MCP for Unity server
-                    return client.Connected;
+                    var connectTask = client.ConnectAsync(IPAddress.Loopback, port);
+                    if (connectTask.Wait(100)) // 100ms timeout
+                    {
+                        // If connection succeeded, it's likely the MCP for Unity server
+                        return client.Connected;
+                    }
+                    return false;
                 }
-                return false;
             }
             catch
             {
@@ -328,15 +330,17 @@ namespace MCPForUnity.Editor.Helpers
         {
             try
             {
-                using SHA1 sha1 = SHA1.Create();
-                byte[] bytes = Encoding.UTF8.GetBytes(input ?? string.Empty);
-                byte[] hashBytes = sha1.ComputeHash(bytes);
-                var sb = new StringBuilder();
-                foreach (byte b in hashBytes)
+                using (SHA1 sha1 = SHA1.Create())
                 {
-                    sb.Append(b.ToString("x2"));
+                    byte[] bytes = Encoding.UTF8.GetBytes(input ?? string.Empty);
+                    byte[] hashBytes = sha1.ComputeHash(bytes);
+                    var sb = new StringBuilder();
+                    foreach (byte b in hashBytes)
+                    {
+                        sb.Append(b.ToString("x2"));
+                    }
+                    return sb.ToString().Substring(0, 8); // short, sufficient for filenames
                 }
-                return sb.ToString()[..8]; // short, sufficient for filenames
             }
             catch
             {

@@ -36,12 +36,17 @@ namespace MCPForUnity.Editor.Services.Transport
 
         private IMcpTransportClient GetOrCreateClient(TransportMode mode)
         {
-            return mode switch
+            switch (mode)
             {
-                TransportMode.Http => _httpClient ??= _webSocketFactory(),
-                TransportMode.Stdio => _stdioClient ??= _stdioFactory(),
-                _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported transport mode"),
-            };
+                case TransportMode.Http:
+                    if (_httpClient == null) _httpClient = _webSocketFactory();
+                    return _httpClient;
+                case TransportMode.Stdio:
+                    if (_stdioClient == null) _stdioClient = _stdioFactory();
+                    return _stdioClient;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported transport mode");
+            }
         }
 
         public Task<bool> StartAsync(TransportMode mode)
@@ -50,12 +55,18 @@ namespace MCPForUnity.Editor.Services.Transport
             // same mode: manual Connect, reload-resume, and auto-start can otherwise race, and
             // WebSocketTransportClient.StartAsync tears down a live connection first — two
             // interleaved starts bounce each other's session.
-            Task<bool> inFlight = mode switch
+            Task<bool> inFlight;
+            switch (mode)
             {
-                TransportMode.Http => _httpStartTask,
-                TransportMode.Stdio => _stdioStartTask,
-                _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported transport mode"),
-            };
+                case TransportMode.Http:
+                    inFlight = _httpStartTask;
+                    break;
+                case TransportMode.Stdio:
+                    inFlight = _stdioStartTask;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported transport mode");
+            }
             if (inFlight != null && !inFlight.IsCompleted)
             {
                 return inFlight;
@@ -133,12 +144,12 @@ namespace MCPForUnity.Editor.Services.Transport
 
         public TransportState GetState(TransportMode mode)
         {
-            return mode switch
+            switch (mode)
             {
-                TransportMode.Http => _httpState,
-                TransportMode.Stdio => ReconciledStdioState(),
-                _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported transport mode"),
-            };
+                case TransportMode.Http: return _httpState;
+                case TransportMode.Stdio: return ReconciledStdioState();
+                default: throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported transport mode");
+            }
         }
 
         /// <summary>
@@ -208,12 +219,12 @@ namespace MCPForUnity.Editor.Services.Transport
         /// </summary>
         public IMcpTransportClient GetClient(TransportMode mode)
         {
-            return mode switch
+            switch (mode)
             {
-                TransportMode.Http => _httpClient,
-                TransportMode.Stdio => _stdioClient,
-                _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported transport mode"),
-            };
+                case TransportMode.Http: return _httpClient;
+                case TransportMode.Stdio: return _stdioClient;
+                default: throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported transport mode");
+            }
         }
 
         private void UpdateState(TransportMode mode, TransportState state)

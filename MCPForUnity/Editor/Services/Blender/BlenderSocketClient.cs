@@ -43,48 +43,52 @@ namespace MCPForUnity.Editor.Services.Blender
             var request = new JObject { ["type"] = type, ["params"] = @params ?? new JObject() };
             byte[] payload = Encoding.UTF8.GetBytes(request.ToString(Formatting.None));
 
-            using var client = new TcpClient();
-            IAsyncResult connect = client.BeginConnect(endpoint.Host, endpoint.Port, null, null);
-            if (!connect.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(ConnectTimeoutSeconds)) || !client.Connected)
+            using (var client = new TcpClient())
             {
-                throw new BlenderUnavailableException(
-                    $"Blender addon not reachable at {endpoint}. Start Blender and press " +
-                    "'Connect to MCP server' in the BlenderMCP sidebar (N panel).");
-            }
-            client.EndConnect(connect);
-
-            using NetworkStream stream = client.GetStream();
-            stream.ReadTimeout = Math.Max(1, timeoutSeconds) * 1000;
-            stream.Write(payload, 0, payload.Length);
-            stream.Flush();
-
-            var buffer = new MemoryStream();
-            var chunk = new byte[65536];
-            DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
-
-            while (true)
-            {
-                int n;
-                try
+                IAsyncResult connect = client.BeginConnect(endpoint.Host, endpoint.Port, null, null);
+                if (!connect.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(ConnectTimeoutSeconds)) || !client.Connected)
                 {
-                    n = stream.Read(chunk, 0, chunk.Length);
+                    throw new BlenderUnavailableException(
+                        $"Blender addon not reachable at {endpoint}. Start Blender and press " +
+                        "'Connect to MCP server' in the BlenderMCP sidebar (N panel).");
                 }
-                catch (IOException e)
+                client.EndConnect(connect);
+
+                using (NetworkStream stream = client.GetStream())
                 {
-                    throw new TimeoutException(
-                        $"Timed out after {timeoutSeconds}s waiting for Blender to answer '{type}'.", e);
+                    stream.ReadTimeout = Math.Max(1, timeoutSeconds) * 1000;
+                    stream.Write(payload, 0, payload.Length);
+                    stream.Flush();
+
+                    var buffer = new MemoryStream();
+                    var chunk = new byte[65536];
+                    DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+
+                    while (true)
+                    {
+                        int n;
+                        try
+                        {
+                            n = stream.Read(chunk, 0, chunk.Length);
+                        }
+                        catch (IOException e)
+                        {
+                            throw new TimeoutException(
+                                $"Timed out after {timeoutSeconds}s waiting for Blender to answer '{type}'.", e);
+                        }
+
+                        if (n <= 0) break;
+                        buffer.Write(chunk, 0, n);
+
+                        if (TryParseResponse(buffer.GetBuffer(), (int)buffer.Length, out JObject parsed)) return Unwrap(parsed, type);
+                        if (DateTime.UtcNow > deadline)
+                            throw new TimeoutException($"Timed out after {timeoutSeconds}s waiting for Blender to answer '{type}'.");
+                    }
+
+                    if (TryParseResponse(buffer.GetBuffer(), (int)buffer.Length, out JObject final)) return Unwrap(final, type);
+                    throw new IOException($"Blender closed the connection before a complete response to '{type}' arrived.");
                 }
-
-                if (n <= 0) break;
-                buffer.Write(chunk, 0, n);
-
-                if (TryParseResponse(buffer.GetBuffer(), (int)buffer.Length, out JObject parsed)) return Unwrap(parsed, type);
-                if (DateTime.UtcNow > deadline)
-                    throw new TimeoutException($"Timed out after {timeoutSeconds}s waiting for Blender to answer '{type}'.");
             }
-
-            if (TryParseResponse(buffer.GetBuffer(), (int)buffer.Length, out JObject final)) return Unwrap(final, type);
-            throw new IOException($"Blender closed the connection before a complete response to '{type}' arrived.");
         }
 
         /// <summary>Runs <see cref="Send"/> on the thread pool so the editor stays responsive.</summary>

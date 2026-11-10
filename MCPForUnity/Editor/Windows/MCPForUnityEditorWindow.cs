@@ -49,7 +49,7 @@ namespace MCPForUnity.Editor.Windows
         private VisualElement resourcesPanel;
         private VisualElement assetGenPanel;
 
-        private static readonly HashSet<MCPForUnityEditorWindow> OpenWindows = new();
+        private static readonly HashSet<MCPForUnityEditorWindow> OpenWindows = new HashSet<MCPForUnityEditorWindow>();
         private bool guiCreated = false;
         private bool toolsLoaded = false;
         private bool resourcesLoaded = false;

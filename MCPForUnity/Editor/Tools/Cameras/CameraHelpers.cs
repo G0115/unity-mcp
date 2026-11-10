@@ -181,13 +181,15 @@ namespace MCPForUnity.Editor.Tools.Cameras
         internal static int ReadCinemachinePriority(Component cmCamera)
         {
             if (cmCamera == null) return 0;
-            using var so = new SerializedObject(cmCamera);
-            var priorityProp = so.FindProperty("Priority");
-            if (priorityProp == null) return 0;
-            var enabledProp = priorityProp.FindPropertyRelative("Enabled");
-            var valueProp = priorityProp.FindPropertyRelative("m_Value");
-            if (enabledProp != null && !enabledProp.boolValue) return 0;
-            return valueProp?.intValue ?? 0;
+            using (var so = new SerializedObject(cmCamera))
+            {
+                var priorityProp = so.FindProperty("Priority");
+                if (priorityProp == null) return 0;
+                var enabledProp = priorityProp.FindPropertyRelative("Enabled");
+                var valueProp = priorityProp.FindPropertyRelative("m_Value");
+                if (enabledProp != null && !enabledProp.boolValue) return 0;
+                return valueProp?.intValue ?? 0;
+            }
         }
 
         internal static bool SetReflectionProperty(Component component, string propertyName, object value)
@@ -245,15 +247,17 @@ namespace MCPForUnity.Editor.Tools.Cameras
 
         internal static string GetFallbackSuggestion(string action)
         {
-            return action switch
+            switch (action)
             {
-                "set_body" or "set_aim" => "Use 'set_lens' and 'set_target' for basic camera configuration.",
-                "set_blend" => "Without Cinemachine, switch cameras by enabling/disabling Camera components.",
-                "set_noise" => "Camera shake without Cinemachine requires a custom script.",
-                "ensure_brain" => "CinemachineBrain requires the Cinemachine package. Basic Camera does not need a Brain.",
-                "get_brain_status" => "No CinemachineBrain available. Cinemachine package not installed.",
-                _ => "Install Cinemachine via Window > Package Manager."
-            };
+                case "set_body":
+                case "set_aim":
+                    return "Use 'set_lens' and 'set_target' for basic camera configuration.";
+                case "set_blend": return "Without Cinemachine, switch cameras by enabling/disabling Camera components.";
+                case "set_noise": return "Camera shake without Cinemachine requires a custom script.";
+                case "ensure_brain": return "CinemachineBrain requires the Cinemachine package. Basic Camera does not need a Brain.";
+                case "get_brain_status": return "No CinemachineBrain available. Cinemachine package not installed.";
+                default: return "Install Cinemachine via Window > Package Manager.";
+            }
         }
 
         internal static void MarkDirty(GameObject go)

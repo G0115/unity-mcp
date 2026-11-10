@@ -114,10 +114,12 @@ namespace MCPForUnity.Editor.Setup
         private static string GetLastSyncedCommitKey(string repoUrl, string branch)
         {
             var scope = $"{repoUrl}|{branch}|{NormalizeRemotePath(SkillSubdir)}";
-            using var sha256 = SHA256.Create();
-            var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(scope));
-            var suffix = BitConverter.ToString(hash).Replace("-", string.Empty).ToLowerInvariant();
-            return $"{LastSyncedCommitKeyPrefix}.{suffix}";
+            using (var sha256 = SHA256.Create())
+            {
+                var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(scope));
+                var suffix = BitConverter.ToString(hash).Replace("-", string.Empty).ToLowerInvariant();
+                return $"{LastSyncedCommitKeyPrefix}.{suffix}";
+            }
         }
 
         internal static bool TryParseGitHubRepository(string url, out GitHubRepoInfo repoInfo)
@@ -176,71 +178,73 @@ namespace MCPForUnity.Editor.Setup
 
         private static RemoteSnapshot FetchRemoteSnapshot(GitHubRepoInfo repoInfo, string branch, string subdir, Action<string> log)
         {
-            using var client = CreateGitHubClient();
-            var commitSha = FetchBranchHeadCommitSha(client, repoInfo, branch, log);
-            var treeApiUrl = BuildTreeApiUrl(repoInfo, commitSha);
-            log?.Invoke($"Fetching remote directory tree at commit {ShortCommit(commitSha)}...");
-            var json = DownloadString(client, treeApiUrl);
-            var treeResponse = JsonUtility.FromJson<GitHubTreeResponse>(json);
-            if (treeResponse == null || treeResponse.tree == null)
+            using (var client = CreateGitHubClient())
             {
-                throw new InvalidOperationException("Failed to parse GitHub directory tree response.");
+                var commitSha = FetchBranchHeadCommitSha(client, repoInfo, branch, log);
+                var treeApiUrl = BuildTreeApiUrl(repoInfo, commitSha);
+                log?.Invoke($"Fetching remote directory tree at commit {ShortCommit(commitSha)}...");
+                var json = DownloadString(client, treeApiUrl);
+                var treeResponse = JsonUtility.FromJson<GitHubTreeResponse>(json);
+                if (treeResponse == null || treeResponse.tree == null)
+                {
+                    throw new InvalidOperationException("Failed to parse GitHub directory tree response.");
+                }
+
+                if (treeResponse.truncated)
+                {
+                    throw new InvalidOperationException(
+                        "GitHub returned a truncated directory tree (incomplete snapshot). " +
+                        "Sync was aborted to prevent accidental deletion of valid local files.");
+                }
+
+                var normalizedSubdir = NormalizeRemotePath(subdir);
+                var subdirPrefix = string.IsNullOrEmpty(normalizedSubdir) ? string.Empty : $"{normalizedSubdir}/";
+                var remoteFiles = new Dictionary<string, string>(StringComparer.Ordinal);
+
+                foreach (var entry in treeResponse.tree)
+                {
+                    if (!string.Equals(entry.type, "blob", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var remotePath = NormalizeRemotePath(entry.path);
+                    if (string.IsNullOrEmpty(remotePath))
+                    {
+                        continue;
+                    }
+
+                    if (!string.IsNullOrEmpty(subdirPrefix) &&
+                        !remotePath.StartsWith(subdirPrefix, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var relativePath = string.IsNullOrEmpty(subdirPrefix)
+                        ? remotePath
+                        : remotePath.Substring(subdirPrefix.Length);
+                    if (string.IsNullOrWhiteSpace(relativePath) || string.IsNullOrWhiteSpace(entry.sha))
+                    {
+                        continue;
+                    }
+
+                    if (!TryNormalizeRelativePath(relativePath, out var safeRelativePath))
+                    {
+                        log?.Invoke($"Skip unsafe remote path: {remotePath}");
+                        continue;
+                    }
+
+                    remoteFiles[safeRelativePath] = entry.sha.Trim().ToLowerInvariant();
+                }
+
+                if (remoteFiles.Count == 0)
+                {
+                    throw new InvalidOperationException($"Remote directory not found: {normalizedSubdir}");
+                }
+
+                log?.Invoke($"Remote file count: {remoteFiles.Count}");
+                return new RemoteSnapshot(commitSha, normalizedSubdir, remoteFiles);
             }
-
-            if (treeResponse.truncated)
-            {
-                throw new InvalidOperationException(
-                    "GitHub returned a truncated directory tree (incomplete snapshot). " +
-                    "Sync was aborted to prevent accidental deletion of valid local files.");
-            }
-
-            var normalizedSubdir = NormalizeRemotePath(subdir);
-            var subdirPrefix = string.IsNullOrEmpty(normalizedSubdir) ? string.Empty : $"{normalizedSubdir}/";
-            var remoteFiles = new Dictionary<string, string>(StringComparer.Ordinal);
-
-            foreach (var entry in treeResponse.tree)
-            {
-                if (!string.Equals(entry.type, "blob", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                var remotePath = NormalizeRemotePath(entry.path);
-                if (string.IsNullOrEmpty(remotePath))
-                {
-                    continue;
-                }
-
-                if (!string.IsNullOrEmpty(subdirPrefix) &&
-                    !remotePath.StartsWith(subdirPrefix, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                var relativePath = string.IsNullOrEmpty(subdirPrefix)
-                    ? remotePath
-                    : remotePath.Substring(subdirPrefix.Length);
-                if (string.IsNullOrWhiteSpace(relativePath) || string.IsNullOrWhiteSpace(entry.sha))
-                {
-                    continue;
-                }
-
-                if (!TryNormalizeRelativePath(relativePath, out var safeRelativePath))
-                {
-                    log?.Invoke($"Skip unsafe remote path: {remotePath}");
-                    continue;
-                }
-
-                remoteFiles[safeRelativePath] = entry.sha.Trim().ToLowerInvariant();
-            }
-
-            if (remoteFiles.Count == 0)
-            {
-                throw new InvalidOperationException($"Remote directory not found: {normalizedSubdir}");
-            }
-
-            log?.Invoke($"Remote file count: {remoteFiles.Count}");
-            return new RemoteSnapshot(commitSha, normalizedSubdir, remoteFiles);
         }
 
         private static string FetchBranchHeadCommitSha(HttpClient client, GitHubRepoInfo repoInfo, string branch, Action<string> log)
@@ -290,26 +294,30 @@ namespace MCPForUnity.Editor.Setup
 
         internal static string DownloadString(HttpClient client, string url)
         {
-            using var response = client.GetAsync(url).GetAwaiter().GetResult();
-            var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-            if (!response.IsSuccessStatusCode)
+            using (var response = client.GetAsync(url).GetAwaiter().GetResult())
             {
-                throw new InvalidOperationException($"GitHub request failed: {(int)response.StatusCode} {response.ReasonPhrase} ({url})\n{body}");
-            }
+                var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new InvalidOperationException($"GitHub request failed: {(int)response.StatusCode} {response.ReasonPhrase} ({url})\n{body}");
+                }
 
-            return body;
+                return body;
+            }
         }
 
         private static byte[] DownloadBytes(HttpClient client, string url)
         {
-            using var response = client.GetAsync(url).GetAwaiter().GetResult();
-            if (!response.IsSuccessStatusCode)
+            using (var response = client.GetAsync(url).GetAwaiter().GetResult())
             {
-                var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-                throw new InvalidOperationException($"File download failed: {(int)response.StatusCode} {response.ReasonPhrase} ({url})\n{body}");
-            }
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    throw new InvalidOperationException($"File download failed: {(int)response.StatusCode} {response.ReasonPhrase} ({url})\n{body}");
+                }
 
-            return response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                return response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+            }
         }
 
         internal static string NormalizeRemotePath(string path)
@@ -435,33 +443,35 @@ namespace MCPForUnity.Editor.Setup
 
         private static void ApplyPlan(GitHubRepoInfo repoInfo, string commitSha, string remoteSubdir, string targetRoot, SyncPlan plan, StringComparison pathComparison, Action<string> log)
         {
-            using var client = CreateGitHubClient();
-            foreach (var relativePath in plan.Added.Concat(plan.Updated))
+            using (var client = CreateGitHubClient())
             {
-                var remoteFilePath = CombineRemotePath(remoteSubdir, relativePath);
-                var downloadUrl = BuildRawFileUrl(repoInfo, commitSha, remoteFilePath);
-                var targetFile = ResolvePathUnderRoot(targetRoot, relativePath, pathComparison);
-                var targetDirectory = Path.GetDirectoryName(targetFile);
-                if (!string.IsNullOrEmpty(targetDirectory))
+                foreach (var relativePath in plan.Added.Concat(plan.Updated))
                 {
-                    Directory.CreateDirectory(targetDirectory);
+                    var remoteFilePath = CombineRemotePath(remoteSubdir, relativePath);
+                    var downloadUrl = BuildRawFileUrl(repoInfo, commitSha, remoteFilePath);
+                    var targetFile = ResolvePathUnderRoot(targetRoot, relativePath, pathComparison);
+                    var targetDirectory = Path.GetDirectoryName(targetFile);
+                    if (!string.IsNullOrEmpty(targetDirectory))
+                    {
+                        Directory.CreateDirectory(targetDirectory);
+                    }
+
+                    log?.Invoke($"Download: {relativePath}");
+                    var bytes = DownloadBytes(client, downloadUrl);
+                    File.WriteAllBytes(targetFile, bytes);
                 }
 
-                log?.Invoke($"Download: {relativePath}");
-                var bytes = DownloadBytes(client, downloadUrl);
-                File.WriteAllBytes(targetFile, bytes);
-            }
-
-            foreach (var relativePath in plan.Deleted)
-            {
-                var targetFile = ResolvePathUnderRoot(targetRoot, relativePath, pathComparison);
-                if (File.Exists(targetFile))
+                foreach (var relativePath in plan.Deleted)
                 {
-                    File.Delete(targetFile);
+                    var targetFile = ResolvePathUnderRoot(targetRoot, relativePath, pathComparison);
+                    if (File.Exists(targetFile))
+                    {
+                        File.Delete(targetFile);
+                    }
                 }
-            }
 
-            RemoveEmptyDirectories(targetRoot);
+                RemoveEmptyDirectories(targetRoot);
+            }
         }
 
         private static void ValidateFileHashes(string installRoot, Dictionary<string, string> remoteFiles, StringComparison pathComparison, Action<string> log)
@@ -496,10 +506,12 @@ namespace MCPForUnity.Editor.Setup
         internal static string ComputeGitBlobSha1(byte[] bytes)
         {
             var headerBytes = Encoding.UTF8.GetBytes($"blob {bytes.Length}\0");
-            using var sha1 = SHA1.Create();
-            sha1.TransformBlock(headerBytes, 0, headerBytes.Length, null, 0);
-            sha1.TransformFinalBlock(bytes, 0, bytes.Length);
-            return BitConverter.ToString(sha1.Hash ?? Array.Empty<byte>()).Replace("-", string.Empty).ToLowerInvariant();
+            using (var sha1 = SHA1.Create())
+            {
+                sha1.TransformBlock(headerBytes, 0, headerBytes.Length, null, 0);
+                sha1.TransformFinalBlock(bytes, 0, bytes.Length);
+                return BitConverter.ToString(sha1.Hash ?? Array.Empty<byte>()).Replace("-", string.Empty).ToLowerInvariant();
+            }
         }
 
         internal static Dictionary<string, string> ListFiles(string root)
@@ -808,9 +820,9 @@ namespace MCPForUnity.Editor.Setup
 
         internal sealed class SyncPlan
         {
-            public List<string> Added { get; } = new();
-            public List<string> Updated { get; } = new();
-            public List<string> Deleted { get; } = new();
+            public List<string> Added { get; } = new List<string>();
+            public List<string> Updated { get; } = new List<string>();
+            public List<string> Deleted { get; } = new List<string>();
         }
     }
 }

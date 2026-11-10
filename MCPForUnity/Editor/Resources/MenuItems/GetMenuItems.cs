@@ -64,7 +64,7 @@ namespace MCPForUnity.Editor.Resources.MenuItems
             catch (Exception ex)
             {
                 McpLog.Error($"[GetMenuItems] Failed to scan menu items: {ex}");
-                _cached ??= new List<string>();
+                if (_cached == null) _cached = new List<string>();
             }
         }
     }

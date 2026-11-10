@@ -61,8 +61,8 @@ namespace MCPForUnity.Editor.Services
         private const string SessionKeyJobs = "MCPForUnity.TestJobsV1";
         private const string SessionKeyCurrentJobId = "MCPForUnity.CurrentTestJobIdV1";
 
-        private static readonly object LockObj = new();
-        private static readonly Dictionary<string, TestJob> Jobs = new();
+        private static readonly object LockObj = new object();
+        private static readonly Dictionary<string, TestJob> Jobs = new Dictionary<string, TestJob>();
         private static string _currentJobId;
         private static long _lastPersistUnixMs;
 
@@ -189,12 +189,12 @@ namespace MCPForUnity.Editor.Services
             }
 
             string s = status.Trim().ToLowerInvariant();
-            return s switch
+            switch (s)
             {
-                "succeeded" => TestJobStatus.Succeeded,
-                "failed" => TestJobStatus.Failed,
-                _ => TestJobStatus.Running
-            };
+                case "succeeded": return TestJobStatus.Succeeded;
+                case "failed": return TestJobStatus.Failed;
+                default: return TestJobStatus.Running;
+            }
         }
 
         private static void TryRestoreFromSessionState()
@@ -467,7 +467,7 @@ namespace MCPForUnity.Editor.Services
                 job.CurrentTestStartedUnixMs = null;
                 job.LastFinishedTestFullName = null;
                 job.LastFinishedUnixMs = null;
-                job.FailuresSoFar ??= new List<TestJobFailure>();
+                if (job.FailuresSoFar == null) job.FailuresSoFar = new List<TestJobFailure>();
                 job.FailuresSoFar.Clear();
             }
             PersistToSessionState(force: true);
@@ -512,7 +512,7 @@ namespace MCPForUnity.Editor.Services
 
                 if (isFailure)
                 {
-                    job.FailuresSoFar ??= new List<TestJobFailure>();
+                    if (job.FailuresSoFar == null) job.FailuresSoFar = new List<TestJobFailure>();
                     if (job.FailuresSoFar.Count < FailureCap)
                     {
                         job.FailuresSoFar.Add(new TestJobFailure

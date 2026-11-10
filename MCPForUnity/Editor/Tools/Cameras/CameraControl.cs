@@ -174,44 +174,46 @@ namespace MCPForUnity.Editor.Tools.Cameras
             var props = CameraHelpers.ExtractProperties(@params) ?? new JObject();
             Undo.RecordObject(brain, "Set Camera Blend");
 
-            using var so = new SerializedObject(brain);
-            var defaultBlendProp = so.FindProperty("DefaultBlend") ?? so.FindProperty("m_DefaultBlend");
-            if (defaultBlendProp == null)
-                return new ErrorResponse("Could not find DefaultBlend property on CinemachineBrain.");
-
-            string style = ParamCoercion.CoerceString(props["style"], null);
-            if (style != null)
+            using (var so = new SerializedObject(brain))
             {
-                var styleProp = defaultBlendProp.FindPropertyRelative("Style")
-                             ?? defaultBlendProp.FindPropertyRelative("m_Style");
-                if (styleProp != null && styleProp.propertyType == SerializedPropertyType.Enum)
+                var defaultBlendProp = so.FindProperty("DefaultBlend") ?? so.FindProperty("m_DefaultBlend");
+                if (defaultBlendProp == null)
+                    return new ErrorResponse("Could not find DefaultBlend property on CinemachineBrain.");
+
+                string style = ParamCoercion.CoerceString(props["style"], null);
+                if (style != null)
                 {
-                    // Try to parse the style enum
-                    var enumNames = styleProp.enumNames;
-                    int idx = Array.FindIndex(enumNames, n => n.Equals(style, StringComparison.OrdinalIgnoreCase));
-                    if (idx >= 0)
-                        styleProp.enumValueIndex = idx;
+                    var styleProp = defaultBlendProp.FindPropertyRelative("Style")
+                                 ?? defaultBlendProp.FindPropertyRelative("m_Style");
+                    if (styleProp != null && styleProp.propertyType == SerializedPropertyType.Enum)
+                    {
+                        // Try to parse the style enum
+                        var enumNames = styleProp.enumNames;
+                        int idx = Array.FindIndex(enumNames, n => n.Equals(style, StringComparison.OrdinalIgnoreCase));
+                        if (idx >= 0)
+                            styleProp.enumValueIndex = idx;
+                    }
                 }
+
+                float duration = ParamCoercion.CoerceFloat(props["duration"], -1f);
+                if (duration >= 0)
+                {
+                    var timeProp = defaultBlendProp.FindPropertyRelative("Time")
+                                ?? defaultBlendProp.FindPropertyRelative("m_Time");
+                    if (timeProp != null)
+                        timeProp.floatValue = duration;
+                }
+
+                so.ApplyModifiedProperties();
+                CameraHelpers.MarkDirty(brain.gameObject);
+
+                return new
+                {
+                    success = true,
+                    message = "Default blend configured on CinemachineBrain.",
+                    data = new { instanceID = brain.gameObject.GetInstanceIDCompat() }
+                };
             }
-
-            float duration = ParamCoercion.CoerceFloat(props["duration"], -1f);
-            if (duration >= 0)
-            {
-                var timeProp = defaultBlendProp.FindPropertyRelative("Time")
-                            ?? defaultBlendProp.FindPropertyRelative("m_Time");
-                if (timeProp != null)
-                    timeProp.floatValue = duration;
-            }
-
-            so.ApplyModifiedProperties();
-            CameraHelpers.MarkDirty(brain.gameObject);
-
-            return new
-            {
-                success = true,
-                message = "Default blend configured on CinemachineBrain.",
-                data = new { instanceID = brain.gameObject.GetInstanceIDCompat() }
-            };
         }
 
         private static int _overrideId = -1;

@@ -11,7 +11,7 @@ namespace MCPForUnity.Editor.Security
     {
         private static ISecureKeyStore _current;
 
-        public static ISecureKeyStore Current => _current ??= Build();
+        public static ISecureKeyStore Current => _current ?? (_current = Build());
 
         /// <summary>Test seam: substitute an in-memory or temp-dir store.</summary>
         internal static void OverrideForTests(ISecureKeyStore store) => _current = store;

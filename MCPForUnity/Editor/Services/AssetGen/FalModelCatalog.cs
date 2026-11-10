@@ -28,10 +28,10 @@ namespace MCPForUnity.Editor.Services.AssetGen
         // (~860 bytes per model), so this leaves ~25x headroom before reloads stop using the cache.
         internal const long MaxCacheBytes = 16 * 1024 * 1024;
         private static readonly TimeSpan Lifetime = TimeSpan.FromHours(24);
-        private static readonly Dictionary<string, Snapshot> Snapshots = new();
-        private static readonly Dictionary<string, Task<bool>> Refreshes = new();
-        private static readonly Dictionary<string, string> Errors = new();
-        private static readonly Dictionary<string, DateTime> Attempts = new();
+        private static readonly Dictionary<string, Snapshot> Snapshots = new Dictionary<string, Snapshot>();
+        private static readonly Dictionary<string, Task<bool>> Refreshes = new Dictionary<string, Task<bool>>();
+        private static readonly Dictionary<string, string> Errors = new Dictionary<string, string>();
+        private static readonly Dictionary<string, DateTime> Attempts = new Dictionary<string, DateTime>();
         private static bool loaded;
         private static readonly SemaphoreSlim RequestGate = new(1, 1);
         private static DateTime nextRequestAt;
@@ -112,61 +112,63 @@ namespace MCPForUnity.Editor.Services.AssetGen
                 // Public discovery works without credentials; a configured key grants higher limits.
                 if (TransportOverrideForTests == null)
                     try { SecureKeyStore.Current.TryGet("fal", out apiKey); } catch { /* public fallback */ }
-                using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-                var http = TransportOverrideForTests ?? new UnityWebRequestTransport();
-                var all = await ListMetadata(kind, http, timeout.Token, apiKey);
-                var bundled = AssetGenModelCatalog.Bundled("fal", kind);
-                var preferred = bundled.Select(e => e.Id).ToList();
-                string selected = AssetGenPrefs.GetSelectedModel(kind, "fal");
-                if (FalModelSchema.SafeId(selected)) preferred.Insert(0, selected);
-                // Known profiles and user selections first; vendor highlights and recency order
-                // candidates. Recency is not presented as a measured quality score.
-                var candidates = all.Values
-                    .Where(model => FalModelSchema.IsCandidate(model, kind))
-                    .OrderBy(model => preferred.Contains((string)model["endpoint_id"]) ? preferred.IndexOf((string)model["endpoint_id"]) : int.MaxValue)
-                    .ThenByDescending(model => (bool?)model["metadata"]?["highlighted"] == true || (bool?)model["metadata"]?["pinned"] == true)
-                    .ThenByDescending(model => (string)model["metadata"]?["updated_at"] ?? (string)model["metadata"]?["date"])
-                    .ThenBy(model => (string)model["endpoint_id"], StringComparer.Ordinal)
-                    .ToArray();
-                var eager = candidates.Take(EagerVerificationLimit + preferred.Count).ToArray();
-                var ids = eager.Select(model => (string)model["endpoint_id"]).ToList();
-                if (kind == "image") ids.AddRange(eager.Where(m => (string)m["metadata"]?["category"] == "text-to-image")
-                    .Select(m => (string)m["endpoint_id"] + "/edit").Where(all.ContainsKey));
-                var details = await Details(ids, http, timeout.Token, apiKey);
-                string checkedAt = UtcNow().ToString("O");
-                var entries = new List<ModelEntry>();
-                foreach (var candidate in candidates)
+                using (var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5)))
                 {
-                    string id = (string)candidate["endpoint_id"];
-                    // Keep the complete lightweight catalog. Expand only a small recommended
-                    // set; all other endpoints are checked on selection or before generation.
-                    if (!eager.Contains(candidate)) { entries.Add(FalModelSchema.Discover(candidate, kind)); continue; }
-                    if (!details.TryGetValue(id, out var model)) continue;
-                    var entry = FalModelSchema.Parse(model, kind, checkedAt);
-                    if (entry == null) continue;
-                    if (kind == "image" && details.TryGetValue(id + "/edit", out var editModel))
+                    var http = TransportOverrideForTests ?? new UnityWebRequestTransport();
+                    var all = await ListMetadata(kind, http, timeout.Token, apiKey);
+                    var bundled = AssetGenModelCatalog.Bundled("fal", kind);
+                    var preferred = bundled.Select(e => e.Id).ToList();
+                    string selected = AssetGenPrefs.GetSelectedModel(kind, "fal");
+                    if (FalModelSchema.SafeId(selected)) preferred.Insert(0, selected);
+                    // Known profiles and user selections first; vendor highlights and recency order
+                    // candidates. Recency is not presented as a measured quality score.
+                    var candidates = all.Values
+                        .Where(model => FalModelSchema.IsCandidate(model, kind))
+                        .OrderBy(model => preferred.Contains((string)model["endpoint_id"]) ? preferred.IndexOf((string)model["endpoint_id"]) : int.MaxValue)
+                        .ThenByDescending(model => (bool?)model["metadata"]?["highlighted"] == true || (bool?)model["metadata"]?["pinned"] == true)
+                        .ThenByDescending(model => (string)model["metadata"]?["updated_at"] ?? (string)model["metadata"]?["date"])
+                        .ThenBy(model => (string)model["endpoint_id"], StringComparer.Ordinal)
+                        .ToArray();
+                    var eager = candidates.Take(EagerVerificationLimit + preferred.Count).ToArray();
+                    var ids = eager.Select(model => (string)model["endpoint_id"]).ToList();
+                    if (kind == "image") ids.AddRange(eager.Where(m => (string)m["metadata"]?["category"] == "text-to-image")
+                        .Select(m => (string)m["endpoint_id"] + "/edit").Where(all.ContainsKey));
+                    var details = await Details(ids, http, timeout.Token, apiKey);
+                    string checkedAt = UtcNow().ToString("O");
+                    var entries = new List<ModelEntry>();
+                    foreach (var candidate in candidates)
                     {
-                        var edit = FalModelSchema.Parse(editModel, "image", checkedAt, edit: true);
-                        if (edit != null)
+                        string id = (string)candidate["endpoint_id"];
+                        // Keep the complete lightweight catalog. Expand only a small recommended
+                        // set; all other endpoints are checked on selection or before generation.
+                        if (!eager.Contains(candidate)) { entries.Add(FalModelSchema.Discover(candidate, kind)); continue; }
+                        if (!details.TryGetValue(id, out var model)) continue;
+                        var entry = FalModelSchema.Parse(model, kind, checkedAt);
+                        if (entry == null) continue;
+                        if (kind == "image" && details.TryGetValue(id + "/edit", out var editModel))
                         {
-                            entry.EditModelId = edit.Id;
-                            entry.ImageInputField = edit.ImageInputField;
-                            entry.ImageInputIsArray = edit.ImageInputIsArray;
-                            entry.EditSupportsNumImages = edit.SupportsNumImages;
-                            entry.EditOutputFormat = edit.OutputFormat;
-                            entry.Modes = new[] { "text", "image" };
+                            var edit = FalModelSchema.Parse(editModel, "image", checkedAt, edit: true);
+                            if (edit != null)
+                            {
+                                entry.EditModelId = edit.Id;
+                                entry.ImageInputField = edit.ImageInputField;
+                                entry.ImageInputIsArray = edit.ImageInputIsArray;
+                                entry.EditSupportsNumImages = edit.SupportsNumImages;
+                                entry.EditOutputFormat = edit.OutputFormat;
+                                entry.Modes = new[] { "text", "image" };
+                            }
                         }
+                        entries.Add(entry);
                     }
-                    entries.Add(entry);
+                    // A selected non-default model must not silently become the automatic default.
+                    var order = bundled.Select((entry, index) => new { entry.Id, Index = index }).ToDictionary(entry => entry.Id, entry => entry.Index);
+                    var ordered = entries.OrderBy(entry => order.TryGetValue(entry.Id, out int index) ? index : int.MaxValue).ToList();
+                    Snapshots[kind] = new Snapshot { Kind = kind, CheckedAt = UtcNow(), Entries = ordered };
+                    Errors.Remove(kind);
+                    Save();
+                    Changed?.Invoke(kind);
+                    return true;
                 }
-                // A selected non-default model must not silently become the automatic default.
-                var order = bundled.Select((entry, index) => new { entry.Id, Index = index }).ToDictionary(entry => entry.Id, entry => entry.Index);
-                var ordered = entries.OrderBy(entry => order.TryGetValue(entry.Id, out int index) ? index : int.MaxValue).ToList();
-                Snapshots[kind] = new Snapshot { Kind = kind, CheckedAt = UtcNow(), Entries = ordered };
-                Errors.Remove(kind);
-                Save();
-                Changed?.Invoke(kind);
-                return true;
             }
             catch (Exception error)
             {
@@ -297,35 +299,37 @@ namespace MCPForUnity.Editor.Services.AssetGen
         internal static async Task<ModelEntry> VerifyForGeneration(string id, string kind, string mode, CancellationToken ct, string apiKey = null)
         {
             if (!FalModelSchema.SafeId(id)) throw new InvalidOperationException("Invalid fal model ID.");
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(60));
-            var known = AssetGenModelCatalog.ForProvider("fal", kind).FirstOrDefault(e => e.Id == id);
-            bool directImage = known?.Modes?.SequenceEqual(new[] { "image" }) == true;
-            var ids = kind == "image" && mode == "image" && !directImage ? new[] { id, id + "/edit" } : new[] { id };
-            var models = await Details(ids, TransportOverrideForTests ?? new UnityWebRequestTransport(), timeout.Token, apiKey, foreground: true);
-            if (!models.TryGetValue(id, out var model)) throw new InvalidOperationException($"Model '{id}' is unavailable. Refresh models and choose another model.");
-            var entry = FalModelSchema.Parse(model, kind, UtcNow().ToString("O"));
-            if (entry == null) throw new InvalidOperationException($"Model '{id}' is unavailable or incompatible with this tool. Refresh models and choose another model.");
-            if (kind == "image" && mode == "image" && !entry.Modes.Contains("image"))
+            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                var edit = models.TryGetValue(id + "/edit", out var editModel) ? FalModelSchema.Parse(editModel, "image", entry.VerifiedAt, edit: true) : null;
-                if (edit == null) throw new InvalidOperationException($"Model '{id}' has no compatible image editing endpoint.");
-                entry.EditModelId = edit.Id;
-                entry.ImageInputField = edit.ImageInputField;
-                entry.ImageInputIsArray = edit.ImageInputIsArray;
-                entry.EditSupportsNumImages = edit.SupportsNumImages;
-                entry.EditOutputFormat = edit.OutputFormat;
-                entry.Modes = new[] { "text", "image" };
+                timeout.CancelAfter(TimeSpan.FromSeconds(60));
+                var known = AssetGenModelCatalog.ForProvider("fal", kind).FirstOrDefault(e => e.Id == id);
+                bool directImage = known?.Modes?.SequenceEqual(new[] { "image" }) == true;
+                var ids = kind == "image" && mode == "image" && !directImage ? new[] { id, id + "/edit" } : new[] { id };
+                var models = await Details(ids, TransportOverrideForTests ?? new UnityWebRequestTransport(), timeout.Token, apiKey, foreground: true);
+                if (!models.TryGetValue(id, out var model)) throw new InvalidOperationException($"Model '{id}' is unavailable. Refresh models and choose another model.");
+                var entry = FalModelSchema.Parse(model, kind, UtcNow().ToString("O"));
+                if (entry == null) throw new InvalidOperationException($"Model '{id}' is unavailable or incompatible with this tool. Refresh models and choose another model.");
+                if (kind == "image" && mode == "image" && !entry.Modes.Contains("image"))
+                {
+                    var edit = models.TryGetValue(id + "/edit", out var editModel) ? FalModelSchema.Parse(editModel, "image", entry.VerifiedAt, edit: true) : null;
+                    if (edit == null) throw new InvalidOperationException($"Model '{id}' has no compatible image editing endpoint.");
+                    entry.EditModelId = edit.Id;
+                    entry.ImageInputField = edit.ImageInputField;
+                    entry.ImageInputIsArray = edit.ImageInputIsArray;
+                    entry.EditSupportsNumImages = edit.SupportsNumImages;
+                    entry.EditOutputFormat = edit.OutputFormat;
+                    entry.Modes = new[] { "text", "image" };
+                }
+                if (!entry.Modes.Contains(string.IsNullOrEmpty(mode) ? "text" : mode))
+                    throw new InvalidOperationException($"Model '{id}' does not support '{mode}' mode.");
+                Load();
+                if (Snapshots.TryGetValue(kind, out var snapshot))
+                {
+                    int index = snapshot.Entries.FindIndex(e => e.Id == id);
+                    if (index >= 0) { snapshot.Entries[index] = entry; Save(); Changed?.Invoke(kind); }
+                }
+                return entry;
             }
-            if (!entry.Modes.Contains(string.IsNullOrEmpty(mode) ? "text" : mode))
-                throw new InvalidOperationException($"Model '{id}' does not support '{mode}' mode.");
-            Load();
-            if (Snapshots.TryGetValue(kind, out var snapshot))
-            {
-                int index = snapshot.Entries.FindIndex(e => e.Id == id);
-                if (index >= 0) { snapshot.Entries[index] = entry; Save(); Changed?.Invoke(kind); }
-            }
-            return entry;
         }
 
         private static string CachePath => CachePathOverrideForTests ?? Path.Combine(Path.GetDirectoryName(Application.dataPath), "Library", "MCPForUnity", "fal-model-catalog.json");

@@ -101,24 +101,24 @@ namespace MCPForUnity.Editor.Helpers
 
         internal static Shader ResolveDefaultLitShader(PipelineKind pipeline)
         {
-            return pipeline switch
+            switch (pipeline)
             {
-                PipelineKind.HighDefinition => TryFindShader(HdrpLitShaders) ?? TryFindShader(UrpLitShaders),
-                PipelineKind.Universal => TryFindShader(UrpLitShaders) ?? TryFindShader(HdrpLitShaders),
-                PipelineKind.Custom => TryFindShader(BuiltInLitShaders) ?? TryFindShader(UrpLitShaders) ?? TryFindShader(HdrpLitShaders),
-                _ => TryFindShader(BuiltInLitShaders) ?? Shader.Find("Unlit/Color")
-            };
+                case PipelineKind.HighDefinition: return TryFindShader(HdrpLitShaders) ?? TryFindShader(UrpLitShaders);
+                case PipelineKind.Universal: return TryFindShader(UrpLitShaders) ?? TryFindShader(HdrpLitShaders);
+                case PipelineKind.Custom: return TryFindShader(BuiltInLitShaders) ?? TryFindShader(UrpLitShaders) ?? TryFindShader(HdrpLitShaders);
+                default: return TryFindShader(BuiltInLitShaders) ?? Shader.Find("Unlit/Color");
+            }
         }
 
         internal static Shader ResolveDefaultUnlitShader(PipelineKind pipeline)
         {
-            return pipeline switch
+            switch (pipeline)
             {
-                PipelineKind.HighDefinition => TryFindShader(HdrpUnlitShaders) ?? TryFindShader(UrpUnlitShaders) ?? TryFindShader(BuiltInUnlitShaders),
-                PipelineKind.Universal => TryFindShader(UrpUnlitShaders) ?? TryFindShader(HdrpUnlitShaders) ?? TryFindShader(BuiltInUnlitShaders),
-                PipelineKind.Custom => TryFindShader(BuiltInUnlitShaders) ?? TryFindShader(UrpUnlitShaders) ?? TryFindShader(HdrpUnlitShaders),
-                _ => TryFindShader(BuiltInUnlitShaders)
-            };
+                case PipelineKind.HighDefinition: return TryFindShader(HdrpUnlitShaders) ?? TryFindShader(UrpUnlitShaders) ?? TryFindShader(BuiltInUnlitShaders);
+                case PipelineKind.Universal: return TryFindShader(UrpUnlitShaders) ?? TryFindShader(HdrpUnlitShaders) ?? TryFindShader(BuiltInUnlitShaders);
+                case PipelineKind.Custom: return TryFindShader(BuiltInUnlitShaders) ?? TryFindShader(UrpUnlitShaders) ?? TryFindShader(HdrpUnlitShaders);
+                default: return TryFindShader(BuiltInUnlitShaders);
+            }
         }
 
         private static Shader ResolveAlias(string alias, PipelineKind pipeline)
@@ -272,13 +272,13 @@ namespace MCPForUnity.Editor.Helpers
             bool shaderLooksSrp = shaderLooksUrp || shaderLooksHdrp;
             bool shaderLooksBuiltin = LooksLikeBuiltInShader(lowerName, shaderLooksSrp);
 
-            return activePipeline switch
+            switch (activePipeline)
             {
-                PipelineKind.HighDefinition => shaderLooksUrp || (shaderLooksBuiltin && !shaderLooksHdrp),
-                PipelineKind.Universal => shaderLooksHdrp || (shaderLooksBuiltin && !shaderLooksUrp),
-                PipelineKind.BuiltIn => shaderLooksSrp,
-                _ => false,
-            };
+                case PipelineKind.HighDefinition: return shaderLooksUrp || (shaderLooksBuiltin && !shaderLooksHdrp);
+                case PipelineKind.Universal: return shaderLooksHdrp || (shaderLooksBuiltin && !shaderLooksUrp);
+                case PipelineKind.BuiltIn: return shaderLooksSrp;
+                default: return false;
+            }
         }
 
         internal static Material GetOrCreateDefaultVFXMaterial(VFXComponentType componentType)
@@ -362,17 +362,17 @@ namespace MCPForUnity.Editor.Helpers
         {
             if (componentType == VFXComponentType.ParticleSystem)
             {
-                return pipeline switch
+                switch (pipeline)
                 {
-                    PipelineKind.Universal => TryFindShader(UrpParticleShaders) ?? ResolveDefaultUnlitShader(pipeline),
-                    PipelineKind.HighDefinition => TryFindShader(HdrpUnlitShaders) ?? ResolveDefaultUnlitShader(pipeline),
-                    PipelineKind.BuiltIn => TryFindShader(BuiltInParticleShaders) ?? ResolveDefaultUnlitShader(pipeline),
-                    PipelineKind.Custom => TryFindShader(UrpParticleShaders)
+                    case PipelineKind.Universal: return TryFindShader(UrpParticleShaders) ?? ResolveDefaultUnlitShader(pipeline);
+                    case PipelineKind.HighDefinition: return TryFindShader(HdrpUnlitShaders) ?? ResolveDefaultUnlitShader(pipeline);
+                    case PipelineKind.BuiltIn: return TryFindShader(BuiltInParticleShaders) ?? ResolveDefaultUnlitShader(pipeline);
+                    case PipelineKind.Custom: return TryFindShader(UrpParticleShaders)
                                            ?? TryFindShader(BuiltInParticleShaders)
                                            ?? TryFindShader(HdrpUnlitShaders)
-                                           ?? ResolveDefaultUnlitShader(pipeline),
-                    _ => ResolveDefaultUnlitShader(pipeline),
-                };
+                                           ?? ResolveDefaultUnlitShader(pipeline);
+                    default: return ResolveDefaultUnlitShader(pipeline);
+                }
             }
 
             return ResolveDefaultUnlitShader(pipeline);

@@ -130,26 +130,28 @@ namespace MCPForUnity.Editor.Tools.Cameras
             Undo.RecordObject(cmCamera, "Set Cinemachine Lens");
 
             // Lens is a struct field — use SerializedProperty for reliable setting
-            using var so = new SerializedObject(cmCamera);
-            var lensProp = so.FindProperty("Lens") ?? so.FindProperty("m_Lens");
-            if (lensProp == null)
-                return new ErrorResponse("Could not find Lens property on CinemachineCamera.");
-
-            SetFloatSubProp(lensProp, "FieldOfView", props["fieldOfView"]);
-            SetFloatSubProp(lensProp, "NearClipPlane", props["nearClipPlane"]);
-            SetFloatSubProp(lensProp, "FarClipPlane", props["farClipPlane"]);
-            SetFloatSubProp(lensProp, "OrthographicSize", props["orthographicSize"]);
-            SetFloatSubProp(lensProp, "Dutch", props["dutch"]);
-
-            so.ApplyModifiedProperties();
-            CameraHelpers.MarkDirty(cmCamera.gameObject);
-
-            return new
+            using (var so = new SerializedObject(cmCamera))
             {
-                success = true,
-                message = $"Lens properties set on CinemachineCamera '{cmCamera.gameObject.name}'.",
-                data = new { instanceID = cmCamera.gameObject.GetInstanceIDCompat() }
-            };
+                var lensProp = so.FindProperty("Lens") ?? so.FindProperty("m_Lens");
+                if (lensProp == null)
+                    return new ErrorResponse("Could not find Lens property on CinemachineCamera.");
+
+                SetFloatSubProp(lensProp, "FieldOfView", props["fieldOfView"]);
+                SetFloatSubProp(lensProp, "NearClipPlane", props["nearClipPlane"]);
+                SetFloatSubProp(lensProp, "FarClipPlane", props["farClipPlane"]);
+                SetFloatSubProp(lensProp, "OrthographicSize", props["orthographicSize"]);
+                SetFloatSubProp(lensProp, "Dutch", props["dutch"]);
+
+                so.ApplyModifiedProperties();
+                CameraHelpers.MarkDirty(cmCamera.gameObject);
+
+                return new
+                {
+                    success = true,
+                    message = $"Lens properties set on CinemachineCamera '{cmCamera.gameObject.name}'.",
+                    data = new { instanceID = cmCamera.gameObject.GetInstanceIDCompat() }
+                };
+            }
         }
 
         internal static object SetCinemachinePriority(JObject @params)
@@ -161,29 +163,31 @@ namespace MCPForUnity.Editor.Tools.Cameras
             int priority = ParamCoercion.CoerceInt(props["priority"], 10);
 
             // PrioritySettings is a struct with Enabled + m_Value — use SerializedProperty
-            using var so = new SerializedObject(cmCamera);
-            var priorityProp = so.FindProperty("Priority");
-            if (priorityProp != null)
+            using (var so = new SerializedObject(cmCamera))
             {
-                var enabledProp = priorityProp.FindPropertyRelative("Enabled");
-                var valueProp = priorityProp.FindPropertyRelative("m_Value");
-                if (enabledProp != null) enabledProp.boolValue = true;
-                if (valueProp != null) valueProp.intValue = priority;
-                so.ApplyModifiedProperties();
-            }
-            else
-            {
-                Undo.RecordObject(cmCamera, "Set Cinemachine Priority");
-                CameraHelpers.SetReflectionProperty(cmCamera, "Priority", priority);
-            }
-            CameraHelpers.MarkDirty(cmCamera.gameObject);
+                var priorityProp = so.FindProperty("Priority");
+                if (priorityProp != null)
+                {
+                    var enabledProp = priorityProp.FindPropertyRelative("Enabled");
+                    var valueProp = priorityProp.FindPropertyRelative("m_Value");
+                    if (enabledProp != null) enabledProp.boolValue = true;
+                    if (valueProp != null) valueProp.intValue = priority;
+                    so.ApplyModifiedProperties();
+                }
+                else
+                {
+                    Undo.RecordObject(cmCamera, "Set Cinemachine Priority");
+                    CameraHelpers.SetReflectionProperty(cmCamera, "Priority", priority);
+                }
+                CameraHelpers.MarkDirty(cmCamera.gameObject);
 
-            return new
-            {
-                success = true,
-                message = $"Priority set to {priority} on CinemachineCamera '{cmCamera.gameObject.name}'.",
-                data = new { instanceID = cmCamera.gameObject.GetInstanceIDCompat(), priority }
-            };
+                return new
+                {
+                    success = true,
+                    message = $"Priority set to {priority} on CinemachineCamera '{cmCamera.gameObject.name}'.",
+                    data = new { instanceID = cmCamera.gameObject.GetInstanceIDCompat(), priority }
+                };
+            }
         }
 
         internal static object SetBody(JObject @params)

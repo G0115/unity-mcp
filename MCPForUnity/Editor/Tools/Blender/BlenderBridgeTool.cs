@@ -512,7 +512,7 @@ print(json.dumps({'path': out, 'bytes': os.path.getsize(out), 'selection_only': 
             {
                 var comp = v as Component;
                 if (comp == null || (isGlobal != null && !(bool)isGlobal.GetValue(comp))) continue;
-                globalVolume ??= comp;
+                if (globalVolume == null) globalVolume = comp;
                 object profile = sharedProfile?.GetValue(comp);
                 var components = profile?.GetType().GetField("components")?.GetValue(profile) as System.Collections.IEnumerable;
                 if (components != null && components.Cast<object>().Any(c => c != null && c.GetType().Name == "Bloom"))
@@ -814,28 +814,30 @@ print(json.dumps({'path': out, 'bytes': os.path.getsize(out), 'selection_only': 
                     StandardErrorEncoding = Encoding.UTF8,
                 };
                 psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-                using var proc = Process.Start(psi);
-                if (proc == null) { stderr = "failed to start git"; return false; }
-                var outTask = proc.StandardOutput.ReadToEndAsync();
-                var errTask = proc.StandardError.ReadToEndAsync();
-                if (!proc.WaitForExit(timeoutMs))
+                using (var proc = Process.Start(psi))
                 {
-                    try { proc.Kill(); } catch { /* already gone */ }
-                    stderr = $"git timed out after {timeoutMs} ms";
-                    return false;
+                    if (proc == null) { stderr = "failed to start git"; return false; }
+                    var outTask = proc.StandardOutput.ReadToEndAsync();
+                    var errTask = proc.StandardError.ReadToEndAsync();
+                    if (!proc.WaitForExit(timeoutMs))
+                    {
+                        try { proc.Kill(); } catch { /* already gone */ }
+                        stderr = $"git timed out after {timeoutMs} ms";
+                        return false;
+                    }
+                    // Git diagnostics may echo credential-bearing URLs (including redirects),
+                    // helper output or bare tokens. Do not send them to MCP clients or editor logs.
+                    // Drain both pipes, but only expose stdout from a successful command.
+                    string output = outTask.Result;
+                    _ = errTask.Result;
+                    if (proc.ExitCode != 0)
+                    {
+                        stderr = $"git exited with code {proc.ExitCode}. Check the checkout and remote configuration locally.";
+                        return false;
+                    }
+                    stdout = output;
+                    return true;
                 }
-                // Git diagnostics may echo credential-bearing URLs (including redirects),
-                // helper output or bare tokens. Do not send them to MCP clients or editor logs.
-                // Drain both pipes, but only expose stdout from a successful command.
-                string output = outTask.Result;
-                _ = errTask.Result;
-                if (proc.ExitCode != 0)
-                {
-                    stderr = $"git exited with code {proc.ExitCode}. Check the checkout and remote configuration locally.";
-                    return false;
-                }
-                stdout = output;
-                return true;
             }
             catch (Exception)
             {
@@ -882,9 +884,13 @@ print(json.dumps({'path': out, 'bytes': os.path.getsize(out), 'selection_only': 
         /// <summary>Lower-case hex MD5 of a file; shared with the Asset Gen panel's addon-sync indicator.</summary>
         internal static string FileMd5(string path)
         {
-            using var md5 = MD5.Create();
-            using var fs = File.OpenRead(path);
-            return BitConverter.ToString(md5.ComputeHash(fs)).Replace("-", "").ToLowerInvariant();
+            using (var md5 = MD5.Create())
+            {
+                using (var fs = File.OpenRead(path))
+                {
+                    return BitConverter.ToString(md5.ComputeHash(fs)).Replace("-", "").ToLowerInvariant();
+                }
+            }
         }
 
         /// <summary>Makes a caller-supplied name safe to use as a file and GameObject name.</summary>

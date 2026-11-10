@@ -67,13 +67,13 @@ namespace MCPForUnity.Editor.Resources.Project
                     return "Old";
 
                 int value = (int)prop.GetValue(null);
-                return value switch
+                switch (value)
                 {
-                    0 => "Old",
-                    1 => "New",
-                    2 => "Both",
-                    _ => "Old"
-                };
+                    case 0: return "Old";
+                    case 1: return "New";
+                    case 2: return "Both";
+                    default: return "Old";
+                }
             }
             catch
             {

@@ -43,8 +43,10 @@ namespace MCPForUnity.Editor.Tools.Graphics
 
             foreach (var (counterName, jsonKey) in COUNTER_MAP)
             {
-                using var recorder = ProfilerRecorder.StartNew(ProfilerCategory.Render, counterName);
-                stats[jsonKey] = recorder.Valid ? recorder.CurrentValue : 0;
+                using (var recorder = ProfilerRecorder.StartNew(ProfilerCategory.Render, counterName))
+                {
+                    stats[jsonKey] = recorder.Valid ? recorder.CurrentValue : 0;
+                }
             }
 
             return new

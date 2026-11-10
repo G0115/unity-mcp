@@ -48,8 +48,8 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
 
         // Data
         private readonly List<IMcpClientConfigurator> configurators;
-        private readonly Dictionary<IMcpClientConfigurator, DateTime> lastStatusChecks = new();
-        private readonly HashSet<IMcpClientConfigurator> statusRefreshInFlight = new();
+        private readonly Dictionary<IMcpClientConfigurator, DateTime> lastStatusChecks = new Dictionary<IMcpClientConfigurator, DateTime>();
+        private readonly HashSet<IMcpClientConfigurator> statusRefreshInFlight = new HashSet<IMcpClientConfigurator>();
         private static readonly TimeSpan StatusRefreshInterval = TimeSpan.FromSeconds(45);
         private int selectedClientIndex = 0;
         private bool isSkillSyncInProgress;
@@ -200,21 +200,21 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
 
         private string GetStatusDisplayString(McpStatus status)
         {
-            return status switch
+            switch (status)
             {
-                McpStatus.NotConfigured => "Not Configured",
-                McpStatus.Configured => "Configured",
-                McpStatus.Running => "Running",
-                McpStatus.Connected => "Connected",
-                McpStatus.IncorrectPath => "Incorrect Path",
-                McpStatus.CommunicationError => "Communication Error",
-                McpStatus.NoResponse => "No Response",
-                McpStatus.UnsupportedOS => "Unsupported OS",
-                McpStatus.MissingConfig => "Missing MCPForUnity Config",
-                McpStatus.Error => "Error",
-                McpStatus.VersionMismatch => "Version Mismatch",
-                _ => "Unknown",
-            };
+                case McpStatus.NotConfigured: return "Not Configured";
+                case McpStatus.Configured: return "Configured";
+                case McpStatus.Running: return "Running";
+                case McpStatus.Connected: return "Connected";
+                case McpStatus.IncorrectPath: return "Incorrect Path";
+                case McpStatus.CommunicationError: return "Communication Error";
+                case McpStatus.NoResponse: return "No Response";
+                case McpStatus.UnsupportedOS: return "Unsupported OS";
+                case McpStatus.MissingConfig: return "Missing MCPForUnity Config";
+                case McpStatus.Error: return "Error";
+                case McpStatus.VersionMismatch: return "Version Mismatch";
+                default: return "Unknown";
+            }
         }
 
         public void UpdateManualConfiguration()

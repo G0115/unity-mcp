@@ -66,14 +66,24 @@ namespace MCPForUnity.Editor.Windows.Components.Validation
 
         private void UpdateValidationDescription()
         {
-            validationDescription.text = currentValidationLevel switch
+            switch (currentValidationLevel)
             {
-                ValidationLevel.Basic => "Basic: Validates syntax only. Fast compilation checks.",
-                ValidationLevel.Standard => "Standard (Recommended): Checks syntax + common errors. Balanced speed and coverage.",
-                ValidationLevel.Comprehensive => "Comprehensive: Detailed validation including code quality. Slower but thorough.",
-                ValidationLevel.Strict => "Strict: Maximum validation + warnings as errors. Slowest but catches all issues.",
-                _ => "Unknown validation level"
-            };
+                case ValidationLevel.Basic:
+                    validationDescription.text = "Basic: Validates syntax only. Fast compilation checks.";
+                    break;
+                case ValidationLevel.Standard:
+                    validationDescription.text = "Standard (Recommended): Checks syntax + common errors. Balanced speed and coverage.";
+                    break;
+                case ValidationLevel.Comprehensive:
+                    validationDescription.text = "Comprehensive: Detailed validation including code quality. Slower but thorough.";
+                    break;
+                case ValidationLevel.Strict:
+                    validationDescription.text = "Strict: Maximum validation + warnings as errors. Slowest but catches all issues.";
+                    break;
+                default:
+                    validationDescription.text = "Unknown validation level";
+                    break;
+            }
         }
     }
 }

@@ -55,14 +55,16 @@ namespace MCPForUnity.Editor.Services.AssetGen
         {
             try
             {
-                using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                var entries = await Discover(ct.Token);
-                snapshot = new Snapshot { CheckedAt = UtcNow(), Entries = entries };
-                fromDisk = false;
-                LastError = null;
-                Save();
-                Changed?.Invoke();
-                return true;
+                using (var ct = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+                {
+                    var entries = await Discover(ct.Token);
+                    snapshot = new Snapshot { CheckedAt = UtcNow(), Entries = entries };
+                    fromDisk = false;
+                    LastError = null;
+                    Save();
+                    Changed?.Invoke();
+                    return true;
+                }
             }
             catch (Exception error)
             {
@@ -99,32 +101,34 @@ namespace MCPForUnity.Editor.Services.AssetGen
         internal static async Task<ModelEntry> VerifyForGeneration(string id, string mode, CancellationToken ct)
         {
             if (!FalModelSchema.SafeId(id)) throw new InvalidOperationException("Invalid OpenRouter model ID.");
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(30));
-            var entry = (await Discover(timeout.Token)).FirstOrDefault(e => e.Id == id);
-            if (entry == null) throw new InvalidOperationException($"OpenRouter model '{id}' is unavailable or incompatible. Refresh models and choose another model.");
-            mode = string.IsNullOrEmpty(mode) ? "text" : mode;
-            var json = await Get(Api + "/" + id + "/endpoints", timeout.Token);
-            if ((string)json["id"] != id || !(json["endpoints"] is JArray endpoints))
-                throw new InvalidOperationException("Invalid OpenRouter endpoint catalog.");
-            foreach (JObject endpoint in endpoints)
+            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                var parameters = endpoint["supported_parameters"] as JObject;
-                string tag = (string)endpoint["provider_tag"];
-                // Pin the chosen capabilities; a fallback provider may accept different fields.
-                if (parameters == null || string.IsNullOrEmpty(tag) || !Modes(parameters).Contains(mode)
-                    || !RasterFormat(parameters, out string format)) continue;
-                entry.RouterProviderTag = tag;
-                entry.RouterParameters = parameters;
-                entry.OutputFormat = format;
-                entry.Modes = Modes(parameters);
-                entry.VerifiedAt = UtcNow().ToString("O");
-                Load();
-                int index = snapshot?.Entries.FindIndex(e => e.Id == id) ?? -1;
-                if (index >= 0) { snapshot.Entries[index] = entry; Save(); Changed?.Invoke(); }
-                return entry;
+                timeout.CancelAfter(TimeSpan.FromSeconds(30));
+                var entry = (await Discover(timeout.Token)).FirstOrDefault(e => e.Id == id);
+                if (entry == null) throw new InvalidOperationException($"OpenRouter model '{id}' is unavailable or incompatible. Refresh models and choose another model.");
+                mode = string.IsNullOrEmpty(mode) ? "text" : mode;
+                var json = await Get(Api + "/" + id + "/endpoints", timeout.Token);
+                if ((string)json["id"] != id || !(json["endpoints"] is JArray endpoints))
+                    throw new InvalidOperationException("Invalid OpenRouter endpoint catalog.");
+                foreach (JObject endpoint in endpoints)
+                {
+                    var parameters = endpoint["supported_parameters"] as JObject;
+                    string tag = (string)endpoint["provider_tag"];
+                    // Pin the chosen capabilities; a fallback provider may accept different fields.
+                    if (parameters == null || string.IsNullOrEmpty(tag) || !Modes(parameters).Contains(mode)
+                        || !RasterFormat(parameters, out string format)) continue;
+                    entry.RouterProviderTag = tag;
+                    entry.RouterParameters = parameters;
+                    entry.OutputFormat = format;
+                    entry.Modes = Modes(parameters);
+                    entry.VerifiedAt = UtcNow().ToString("O");
+                    Load();
+                    int index = snapshot?.Entries.FindIndex(e => e.Id == id) ?? -1;
+                    if (index >= 0) { snapshot.Entries[index] = entry; Save(); Changed?.Invoke(); }
+                    return entry;
+                }
+                throw new InvalidOperationException($"OpenRouter model '{id}' has no compatible '{mode}' endpoint.");
             }
-            throw new InvalidOperationException($"OpenRouter model '{id}' has no compatible '{mode}' endpoint.");
         }
 
         private static string[] Modes(JObject parameters)

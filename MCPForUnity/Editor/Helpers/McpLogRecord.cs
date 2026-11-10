@@ -15,7 +15,7 @@ namespace MCPForUnity.Editor.Helpers
         private static readonly string ErrorLogPath = Path.Combine(LogDir, "mcpError.log");
         private const long MaxLogSizeBytes = 1024 * 1024; // 1 MB
         private static bool _sessionStarted;
-        private static readonly object _logLock = new();
+        private static readonly object _logLock = new object();
         private static volatile bool _isEnabledCached;
 
         [InitializeOnLoadMethod]
@@ -106,7 +106,9 @@ namespace MCPForUnity.Editor.Helpers
 
                 var lines = File.ReadAllLines(path);
                 var half = lines.Length / 2;
-                File.WriteAllLines(path, lines[half..]);
+                var remaining = new string[lines.Length - half];
+                Array.Copy(lines, half, remaining, 0, remaining.Length);
+                File.WriteAllLines(path, remaining);
             }
             catch
             {
