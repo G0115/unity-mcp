@@ -145,7 +145,7 @@ namespace MCPForUnity.Editor.Tools
         private static object HandleGetHistory(JObject @params)
         {
             int limit = @params["limit"]?.Value<int>() ?? 10;
-            limit = Math.Clamp(limit, 1, MaxHistoryEntries);
+            limit = limit < 1 ? 1 : (limit > MaxHistoryEntries ? MaxHistoryEntries : limit);
 
             if (_history.Count == 0)
                 return new SuccessResponse("No execution history.", new { total = 0, entries = new object[0] });

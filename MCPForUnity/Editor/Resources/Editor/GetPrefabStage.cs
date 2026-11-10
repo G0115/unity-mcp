@@ -1,7 +1,11 @@
 using System;
 using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json.Linq;
+#if UNITY_2020_1_OR_NEWER
 using UnityEditor.SceneManagement;
+#else
+using UnityEditor.Experimental.SceneManagement;
+#endif
 
 namespace MCPForUnity.Editor.Resources.Editor
 {
@@ -28,9 +32,15 @@ namespace MCPForUnity.Editor.Resources.Editor
                 return new SuccessResponse("Retrieved prefab stage info.", new
                 {
                     isOpen = true,
+#if UNITY_2020_1_OR_NEWER
                     assetPath = stage.assetPath,
                     prefabRootName = root != null ? root.name : null,
                     mode = stage.mode.ToString(),
+#else
+                    // Experimental PrefabStage exposes prefabAssetPath and no mode
+                    assetPath = stage.prefabAssetPath,
+                    prefabRootName = root != null ? root.name : null,
+#endif
                     isDirty = stage.scene.isDirty,
                 });
             }

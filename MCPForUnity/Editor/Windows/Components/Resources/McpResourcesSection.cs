@@ -5,6 +5,7 @@ using MCPForUnity.Editor.Constants;
 using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Services;
 using UnityEditor;
+using UnityEngine;
 
 namespace MCPForUnity.Editor.Windows.Components.Resources
 {
@@ -169,7 +170,7 @@ namespace MCPForUnity.Editor.Windows.Components.Resources
 
             EditorGUILayout.BeginHorizontal();
             EditorGUI.BeginChangeCheck();
-            bool newEnabled = GUILayout.Toggle(new GUIContent(resource.Name, tooltip), isEnabled);
+            bool newEnabled = GUILayout.Toggle(isEnabled, new GUIContent(resource.Name, tooltip));
             if (EditorGUI.EndChangeCheck() && newEnabled != isEnabled)
             {
                 HandleToggleChange(resource, newEnabled);

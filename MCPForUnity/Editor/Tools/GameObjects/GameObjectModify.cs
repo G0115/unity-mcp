@@ -1,10 +1,12 @@
-#nullable disable
 using System;
 using System.Linq;
 using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+#if !UNITY_2020_1_OR_NEWER
+using UnityEditor.Experimental.SceneManagement;
+#endif
 using UnityEditorInternal;
 using UnityEngine;
 
@@ -44,7 +46,11 @@ namespace MCPForUnity.Editor.Tools.GameObjects
                 if (isRenamingPrefabRoot)
                 {
                     // Rename the prefab asset file to match the new name (avoids Unity dialog)
+#if UNITY_2020_1_OR_NEWER
                     string assetPath = prefabStageForRename.assetPath;
+#else
+                    string assetPath = prefabStageForRename.prefabAssetPath;
+#endif
                     string directory = System.IO.Path.GetDirectoryName(assetPath);
                     string newAssetPath = AssetPathUtility.NormalizeSeparators(System.IO.Path.Combine(directory, name + ".prefab"));
 

@@ -128,7 +128,7 @@ namespace MCPForUnity.Editor.Services
             try
             {
                 string packageName = ExtractPackageName(job.Package);
-                var allPackages = PackageInfo.GetAllRegisteredPackages();
+                var allPackages = PackageManagerCompat.GetAllRegisteredPackages();
                 var info = FindPackageInfo(allPackages, packageName, job.Package);
 
                 if (job.Operation == "add" || job.Operation == "embed")

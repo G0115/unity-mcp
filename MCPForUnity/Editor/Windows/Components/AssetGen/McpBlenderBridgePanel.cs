@@ -86,13 +86,21 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             EditorGUILayout.BeginHorizontal();
             EditorGUILayout.PrefixLabel("Addon Socket:");
             GUI.SetNextControlName(HostControl);
+#if UNITY_2020_1_OR_NEWER
             hostText = EditorGUILayout.TextField(
                 new GUIContent(hostText, "Host the BlenderMCP addon socket listens on (Blender's N panel > BlenderMCP)."),
                 GUILayout.Width(140f));
+#else
+            hostText = EditorGUILayout.TextField(hostText, GUILayout.Width(140f));
+#endif
             GUI.SetNextControlName(PortControl);
+#if UNITY_2020_1_OR_NEWER
             portText = EditorGUILayout.TextField(
                 new GUIContent(portText, $"Addon socket port. Default {BlenderBridgePrefs.DefaultPort}."),
                 GUILayout.Width(70f));
+#else
+            portText = EditorGUILayout.TextField(portText, GUILayout.Width(70f));
+#endif
             using (new EditorGUI.DisabledScope(busy))
             {
                 if (GUILayout.Button(new GUIContent("Test Connection",
@@ -450,7 +458,11 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             params GUILayoutOption[] options)
         {
             GUI.SetNextControlName(controlName);
+#if UNITY_2020_1_OR_NEWER
             string result = EditorGUILayout.TextField(new GUIContent(value, tooltip), options);
+#else
+            string result = EditorGUILayout.TextField(value, options);
+#endif
             DrawPlaceholder(placeholder, controlName, value);
             return result;
         }

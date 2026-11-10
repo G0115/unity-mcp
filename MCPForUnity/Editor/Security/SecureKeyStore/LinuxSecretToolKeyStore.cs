@@ -12,12 +12,20 @@ namespace MCPForUnity.Editor.Security
     {
         private const string Service = SecureKeyStoreConstants.ServiceName;
 
+        // netstandard2.0 has no ProcessStartInfo.ArgumentList; emulate with quoted args
+        private static void AppendArg(System.Diagnostics.ProcessStartInfo psi, string arg)
+        {
+            bool needsQuote = arg.Length == 0 || arg.IndexOfAny(new[] { ' ', '\t', '"', '\'' }) >= 0;
+            string quoted = needsQuote ? "\"" + arg.Replace("\"", "\\\"") + "\"" : arg;
+            psi.Arguments += (psi.Arguments.Length > 0 ? " " : "") + quoted;
+        }
+
         internal static bool IsAvailable()
         {
             try
             {
                 var psi = NewPsi();
-                psi.ArgumentList.Add("--version");
+                AppendArg(psi, "--version");
                 using (var p = Process.Start(psi))
                 {
                     p.WaitForExit(2000);
@@ -36,9 +44,9 @@ namespace MCPForUnity.Editor.Security
             try
             {
                 var psi = NewPsi();
-                psi.ArgumentList.Add("lookup");
-                psi.ArgumentList.Add("service"); psi.ArgumentList.Add(Service);
-                psi.ArgumentList.Add("account"); psi.ArgumentList.Add(providerId);
+                AppendArg(psi, "lookup");
+                AppendArg(psi, "service"); AppendArg(psi, Service);
+                AppendArg(psi, "account"); AppendArg(psi, providerId);
                 using (var p = Process.Start(psi))
                 {
                     string outp = p.StandardOutput.ReadToEnd();
@@ -58,10 +66,10 @@ namespace MCPForUnity.Editor.Security
             try
             {
                 var psi = NewPsi(redirectIn: true);
-                psi.ArgumentList.Add("store");
-                psi.ArgumentList.Add("--label=MCPForUnity AssetGen");
-                psi.ArgumentList.Add("service"); psi.ArgumentList.Add(Service);
-                psi.ArgumentList.Add("account"); psi.ArgumentList.Add(providerId);
+                AppendArg(psi, "store");
+                AppendArg(psi, "--label=MCPForUnity AssetGen");
+                AppendArg(psi, "service"); AppendArg(psi, Service);
+                AppendArg(psi, "account"); AppendArg(psi, providerId);
                 using (var p = Process.Start(psi))
                 {
                     p.StandardInput.Write(apiKey);
@@ -78,9 +86,9 @@ namespace MCPForUnity.Editor.Security
             try
             {
                 var psi = NewPsi();
-                psi.ArgumentList.Add("clear");
-                psi.ArgumentList.Add("service"); psi.ArgumentList.Add(Service);
-                psi.ArgumentList.Add("account"); psi.ArgumentList.Add(providerId);
+                AppendArg(psi, "clear");
+                AppendArg(psi, "service"); AppendArg(psi, Service);
+                AppendArg(psi, "account"); AppendArg(psi, providerId);
                 using (var p = Process.Start(psi)) p.WaitForExit(5000);
             }
             catch { /* best effort */ }
@@ -96,7 +104,7 @@ namespace MCPForUnity.Editor.Security
                 RedirectStandardError = true,
                 RedirectStandardInput = redirectIn,
             };
-            psi.ArgumentList.Add("secret-tool");
+            AppendArg(psi, "secret-tool");
             return psi;
         }
     }

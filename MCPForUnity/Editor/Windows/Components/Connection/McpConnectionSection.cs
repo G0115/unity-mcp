@@ -48,6 +48,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
         private string transportMismatchText = string.Empty;
         private bool versionMismatchVisible;
         private string versionMismatchText = string.Empty;
+        private string cachedLoginUrl;
         private string httpUrlField = string.Empty;
         private string apiKeyField = string.Empty;
         private string startHttpServerButtonText = "Start Server";

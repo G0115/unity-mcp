@@ -189,8 +189,10 @@ namespace MCPForUnity.Editor.Tools.Vfx
             float time = @params["time"]?.ToObject<float>() ?? 0f;
             int minCountRaw = @params["minCount"]?.ToObject<int>() ?? @params["count"]?.ToObject<int>() ?? 30;
             int maxCountRaw = @params["maxCount"]?.ToObject<int>() ?? @params["count"]?.ToObject<int>() ?? 30;
-            short minCount = (short)Math.Clamp(minCountRaw, 0, short.MaxValue);
-            short maxCount = (short)Math.Clamp(maxCountRaw, 0, short.MaxValue);
+            int minClamped = minCountRaw < 0 ? 0 : (minCountRaw > short.MaxValue ? short.MaxValue : minCountRaw);
+            int maxClamped = maxCountRaw < 0 ? 0 : (maxCountRaw > short.MaxValue ? short.MaxValue : maxCountRaw);
+            short minCount = (short)minClamped;
+            short maxCount = (short)maxClamped;
             int cycles = @params["cycles"]?.ToObject<int>() ?? 1;
             float interval = @params["interval"]?.ToObject<float>() ?? 0.01f;
 

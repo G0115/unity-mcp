@@ -260,7 +260,11 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             if (EditorApplication.timeSinceStartup < nextAutoRefreshAt) return;
             nextAutoRefreshAt = EditorApplication.timeSinceStartup + AutoRefreshIntervalSeconds;
 
-            if (Resources.FindObjectsOfTypeAll<MCPForUnityEditorWindow>().Length == 0)
+            #if UNITY_2020_1_OR_NEWER
+            if (UnityEngine.Resources.FindObjectsOfTypeAll<MCPForUnityEditorWindow>().Length == 0)
+#else
+            if (UnityEngine.Object.FindObjectsOfTypeAll(typeof(MCPForUnityEditorWindow)).Length == 0)
+#endif
             {
                 EditorApplication.update -= AutoRefreshTick;
                 autoRefreshHooked = false;
@@ -332,10 +336,14 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             EditorGUILayout.BeginHorizontal();
             string edit = keyEdits.TryGetValue(id, out string buffered) ? buffered : string.Empty;
             GUI.SetNextControlName(KeyControlPrefix + id);
+#if UNITY_2020_1_OR_NEWER
             edit = EditorGUILayout.PasswordField(new GUIContent(edit,
                 $"Paste your {displayName} API key, then press Save (or click away). " +
                 "The key is stored in your OS secure store and is never read back into this field."),
                 GUILayout.ExpandWidth(true));
+#else
+            edit = EditorGUILayout.PasswordField(edit, GUILayout.ExpandWidth(true));
+#endif
             keyEdits[id] = edit;
             if (GUILayout.Button("Save", EditorStyles.miniButton))
             {
@@ -676,7 +684,11 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             params GUILayoutOption[] options)
         {
             GUI.SetNextControlName(controlName);
+#if UNITY_2020_1_OR_NEWER
             string result = EditorGUILayout.TextField(new GUIContent(value, tooltip), options);
+#else
+            string result = EditorGUILayout.TextField(value, options);
+#endif
             DrawPlaceholder(placeholder, controlName, value);
             return result;
         }

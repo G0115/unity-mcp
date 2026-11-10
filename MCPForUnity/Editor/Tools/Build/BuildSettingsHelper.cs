@@ -3,11 +3,19 @@ using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.Build;
 
+#if UNITY_2021_1_OR_NEWER
+// PlayerSettings read/write overloads that take NamedBuildTarget (2021.1+)
+using SettingsTarget = UnityEditor.Build.NamedBuildTarget;
+#else
+// Same PlayerSettings overloads exist for BuildTargetGroup on 2019.4
+using SettingsTarget = UnityEditor.BuildTargetGroup;
+#endif
+
 namespace MCPForUnity.Editor.Tools.Build
 {
     public static class BuildSettingsHelper
     {
-        public static object ReadProperty(string property, NamedBuildTarget namedTarget)
+        public static object ReadProperty(string property, SettingsTarget namedTarget)
         {
             switch (property.ToLowerInvariant())
             {
@@ -23,7 +31,11 @@ namespace MCPForUnity.Editor.Tools.Build
                     var backend = PlayerSettings.GetScriptingBackend(namedTarget);
                     return new { property, value = backend == ScriptingImplementation.IL2CPP ? "il2cpp" : "mono" };
                 case "defines":
+#if UNITY_2021_1_OR_NEWER
                     return new { property, value = PlayerSettings.GetScriptingDefineSymbols(namedTarget) };
+#else
+                    return new { property, value = PlayerSettings.GetScriptingDefineSymbolsForGroup(namedTarget) };
+#endif
                 case "architecture":
                     var arch = PlayerSettings.GetArchitecture(namedTarget);
                     string archName;
@@ -40,7 +52,7 @@ namespace MCPForUnity.Editor.Tools.Build
             }
         }
 
-        public static string WriteProperty(string property, string value, NamedBuildTarget namedTarget)
+        public static string WriteProperty(string property, string value, SettingsTarget namedTarget)
         {
             try
             {
@@ -68,7 +80,11 @@ namespace MCPForUnity.Editor.Tools.Build
                         PlayerSettings.SetScriptingBackend(namedTarget, impl);
                         return null;
                     case "defines":
+#if UNITY_2021_1_OR_NEWER
                         PlayerSettings.SetScriptingDefineSymbols(namedTarget, value);
+#else
+                        PlayerSettings.SetScriptingDefineSymbolsForGroup(namedTarget, value);
+#endif
                         return null;
                     case "architecture":
                         string archStr = value.ToLowerInvariant();

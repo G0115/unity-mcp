@@ -6,6 +6,10 @@ using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+#if !UNITY_2020_1_OR_NEWER
+// Experimental namespace before 2020.1 (PrefabStage / PrefabStageUtility)
+using UnityEditor.Experimental.SceneManagement;
+#endif
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using MCPForUnity.Runtime.Helpers;
@@ -419,7 +423,9 @@ namespace MCPForUnity.Editor.Tools.Prefabs
             string[] colorProps = { "_BaseColor", "_Color" };
             foreach (string prop in colorProps)
             {
-                if (mat.HasProperty(prop) && block.HasColor(prop))
+                // 2019.4 MaterialPropertyBlock has no HasColor/HasProperty; GetColor returns
+                // default(Color) when the block has no override, so use it as presence check.
+                if (mat.HasProperty(prop) && block.GetColor(prop) != default(Color))
                 {
                     mat.SetColor(prop, block.GetColor(prop));
                 }
@@ -1311,9 +1317,20 @@ namespace MCPForUnity.Editor.Tools.Prefabs
                     return new ErrorResponse($"Prefab asset not found at '{sanitizedPath}'.");
                 }
 
+#if UNITY_2020_1_OR_NEWER
                 var prefabStage = PrefabStageUtility.OpenPrefab(sanitizedPath);
+#else
+                // 2019.4: PrefabStageUtility.OpenPrefab is internal; AssetDatabase.OpenAsset
+                // is the public equivalent (enters prefab mode and opens the stage).
+                AssetDatabase.OpenAsset(prefabAsset);
+                var prefabStage = PrefabStageUtility.GetCurrentPrefabStage();
+#endif
                 bool enteredStage = prefabStage != null
+#if UNITY_2020_1_OR_NEWER
                     && string.Equals(prefabStage.assetPath, sanitizedPath, StringComparison.OrdinalIgnoreCase)
+#else
+                    && string.Equals(prefabStage.prefabAssetPath, sanitizedPath, StringComparison.OrdinalIgnoreCase)
+#endif
                     && prefabStage.prefabContentsRoot != null;
 
                 if (!enteredStage)
@@ -1326,7 +1343,11 @@ namespace MCPForUnity.Editor.Tools.Prefabs
                     new
                     {
                         prefabPath = sanitizedPath,
+#if UNITY_2020_1_OR_NEWER
                         openedPrefabPath = prefabStage.assetPath,
+#else
+                        openedPrefabPath = prefabStage.prefabAssetPath,
+#endif
                         rootName = prefabStage.prefabContentsRoot.name,
                         enteredPrefabStage = enteredStage
                     }
@@ -1379,7 +1400,11 @@ namespace MCPForUnity.Editor.Tools.Prefabs
                     }
                 }
 
+#if UNITY_2020_1_OR_NEWER
                 string prefabPath = prefabStage.assetPath;
+#else
+                string prefabPath = prefabStage.prefabAssetPath;
+#endif
                 StageUtility.GoToMainStage();
                 return new SuccessResponse($"Exited prefab stage for '{prefabPath}'.", new { prefabPath });
             }
@@ -1391,7 +1416,11 @@ namespace MCPForUnity.Editor.Tools.Prefabs
 
         private static bool TrySavePrefabStage(PrefabStage prefabStage, out string prefabPath, out string errorMessage)
         {
+#if UNITY_2020_1_OR_NEWER
             prefabPath = prefabStage.assetPath;
+#else
+            prefabPath = prefabStage.prefabAssetPath;
+#endif
             errorMessage = null;
 
             if (prefabStage.prefabContentsRoot == null)

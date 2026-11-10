@@ -28,7 +28,7 @@ namespace MCPForUnity.Editor.Tools
         internal static int GetMaxCommandsPerBatch()
         {
             int configured = EditorPrefs.GetInt(EditorPrefKeys.BatchExecuteMaxCommands, DefaultMaxCommandsPerBatch);
-            return Math.Clamp(configured, 1, AbsoluteMaxCommandsPerBatch);
+            return configured < 1 ? 1 : (configured > AbsoluteMaxCommandsPerBatch ? AbsoluteMaxCommandsPerBatch : configured);
         }
 
         public static async Task<object> HandleCommand(JObject @params)
@@ -177,7 +177,7 @@ namespace MCPForUnity.Editor.Tools
             };
 
             return overallSuccess
-                ? new SuccessResponse("Batch execution completed.", data)
+                ? (object)new SuccessResponse("Batch execution completed.", data)
                 : new ErrorResponse("One or more commands failed.", data);
         }
 

@@ -42,7 +42,7 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
         private bool projectScopedTools;
 
         /// <summary>Human-friendly names for tool groups shown in the UI.</summary>
-        private static readonly Dictionary<string, string> GroupDisplayNames = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly Dictionary<string, string> GroupDisplayNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             { "core", "Core Tools" },
             { "vfx", "VFX & Shaders" },
@@ -288,11 +288,13 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
         private void DrawToolRow(ToolMetadata tool)
         {
             bool isEnabled = MCPServiceLocator.ToolDiscovery.IsToolEnabled(tool.Name);
+
             string tooltip = string.IsNullOrWhiteSpace(tool.Description) ? tool.Name : tool.Description;
 
             EditorGUILayout.BeginHorizontal();
             EditorGUI.BeginChangeCheck();
-            bool newEnabled = GUILayout.Toggle(new GUIContent(tool.Name, tooltip), isEnabled);
+            bool newEnabled = GUILayout.Toggle(isEnabled, new GUIContent(tool.Name, tooltip));
+
             if (EditorGUI.EndChangeCheck() && newEnabled != isEnabled)
             {
                 HandleToggleChange(tool, newEnabled);
@@ -333,6 +335,12 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
             {
                 DrawBatchExecuteSettings();
             }
+        }
+
+        // Math.Clamp is netstandard2.1; emulate for 2019.4
+        private static int ClampInt(int v, int min, int max)
+        {
+            return v < min ? min : (v > max ? max : v);
         }
 
         private void HandleToggleChange(
@@ -535,12 +543,12 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
                 BatchExecute.DefaultMaxCommandsPerBatch
             );
 
-            int clamped = Math.Clamp(currentValue, 1, BatchExecute.AbsoluteMaxCommandsPerBatch);
+            int clamped = ClampInt(currentValue, 1, BatchExecute.AbsoluteMaxCommandsPerBatch);
             EditorGUI.BeginChangeCheck();
             int newValue = EditorGUILayout.IntField(clamped, GUILayout.Width(60));
             if (EditorGUI.EndChangeCheck())
             {
-                clamped = Math.Clamp(newValue, 1, BatchExecute.AbsoluteMaxCommandsPerBatch);
+                clamped = ClampInt(newValue, 1, BatchExecute.AbsoluteMaxCommandsPerBatch);
                 EditorPrefs.SetInt(EditorPrefKeys.BatchExecuteMaxCommands, clamped);
             }
 

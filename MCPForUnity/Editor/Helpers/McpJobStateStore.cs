@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json;
 using UnityEngine;
@@ -27,7 +28,7 @@ namespace MCPForUnity.Editor.Helpers
         {
             var path = GetStatePath(toolName);
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            var json = JsonConvert.SerializeObject(state ?? Activator.CreateInstance<T>());
+            var json = JsonConvert.SerializeObject(EqualityComparer<T>.Default.Equals(state, default(T)) ? (object)Activator.CreateInstance<T>() : state);
             File.WriteAllText(path, json);
         }
 

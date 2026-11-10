@@ -15,7 +15,7 @@ namespace MCPForUnity.Editor.Windows
     /// </summary>
     public class MCPSetupWindow : EditorWindow
     {
-        private enum StatusKind
+        internal enum StatusKind
         {
             Valid,
             Invalid,

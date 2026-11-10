@@ -23,7 +23,7 @@ namespace MCPForUnity.Editor.Resources.Editor
                     activeGameObject = UnityEditor.Selection.activeGameObject?.name,
                     activeTransform = UnityEditor.Selection.activeTransform?.name,
                     activeInstanceID = UnityEditor.Selection.activeObject?.GetInstanceIDCompat() ?? 0,
-                    count = UnityEditor.Selection.count,
+                    count = UnityEditor.Selection.objects.Length,
                     objects = UnityEditor.Selection.objects
                         .Select(obj => new
                         {

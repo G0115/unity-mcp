@@ -124,7 +124,11 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
             EditorGUILayout.BeginHorizontal();
             using (new EditorGUI.DisabledScope(true))
             {
+#if UNITY_2020_1_OR_NEWER
                 EditorGUILayout.TextField(new GUIContent(uvxPathDisplay, UvxPathTooltip), GUILayout.MinWidth(120f));
+#else
+                EditorGUILayout.TextField(uvxPathDisplay, GUILayout.MinWidth(120f));
+#endif
             }
             if (GUILayout.Button(new GUIContent("Browse", BrowseUvxTooltip), EditorStyles.miniButton, GUILayout.Width(60f)))
             {
@@ -139,7 +143,11 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
             // Server source override row
             GUILayout.Label("Server Source:", EditorStyles.miniLabel, GUILayout.Height(18f));
             EditorGUILayout.BeginHorizontal();
+            #if UNITY_2020_1_OR_NEWER
             string newGitUrl = EditorGUILayout.TextField(new GUIContent(gitUrl, GitUrlTooltip), GUILayout.MinWidth(120f));
+#else
+            string newGitUrl = EditorGUILayout.TextField(gitUrl, GUILayout.MinWidth(120f));
+#endif
             if (newGitUrl != gitUrl)
             {
                 string url = newGitUrl != null ? newGitUrl.Trim() : string.Empty;
@@ -227,7 +235,11 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
             // Screenshots folder override row
             GUILayout.Label("Screenshots Folder:", EditorStyles.miniLabel, GUILayout.Height(18f));
             EditorGUILayout.BeginHorizontal();
+            #if UNITY_2020_1_OR_NEWER
             string newScreenshotsFolder = EditorGUILayout.TextField(new GUIContent(screenshotsFolder, ScreenshotsFolderTooltip), GUILayout.MinWidth(120f));
+#else
+            string newScreenshotsFolder = EditorGUILayout.TextField(screenshotsFolder, GUILayout.MinWidth(120f));
+#endif
             if (newScreenshotsFolder != screenshotsFolder)
             {
                 screenshotsFolder = newScreenshotsFolder;
@@ -246,7 +258,11 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
             // Deployment source row
             GUILayout.Label("Package Source:", EditorStyles.miniLabel, GUILayout.Height(18f));
             EditorGUILayout.BeginHorizontal();
+            #if UNITY_2020_1_OR_NEWER
             string newDeploySource = EditorGUILayout.TextField(new GUIContent(deploySourcePath, DeploySourcePathTooltip), GUILayout.MinWidth(120f));
+#else
+            string newDeploySource = EditorGUILayout.TextField(deploySourcePath, GUILayout.MinWidth(120f));
+#endif
             if (newDeploySource != deploySourcePath)
             {
                 deploySourcePath = newDeploySource;

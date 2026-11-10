@@ -131,6 +131,7 @@ namespace MCPForUnity.Editor.Tools.Graphics
         }
 
         // === bake_get_settings ===
+#if UNITY_2020_1_OR_NEWER
         internal static object GetSettings(JObject @params)
         {
             var settings = EnsureLightingSettings();
@@ -166,7 +167,14 @@ namespace MCPForUnity.Editor.Tools.Graphics
                 data
             };
         }
+#else
+        internal static object GetSettings(JObject @params)
+        {
+            return new ErrorResponse("bake_get_settings requires Unity 2020.1+ (LightingSettings API not available in this Unity version).");
+        }
+#endif
 
+#if UNITY_2020_1_OR_NEWER
         // === bake_set_settings ===
         // Params: settings (dict of property name -> value)
         internal static object SetSettings(JObject @params)
@@ -221,6 +229,12 @@ namespace MCPForUnity.Editor.Tools.Graphics
                 data = new { changed, failed }
             };
         }
+#else
+        internal static object SetSettings(JObject @params)
+        {
+            return new ErrorResponse("bake_set_settings requires Unity 2020.1+ (LightingSettings API not available in this Unity version).");
+        }
+#endif
 
         // === bake_create_light_probe_group ===
         // Params: name, position, grid_size, spacing
@@ -390,6 +404,7 @@ namespace MCPForUnity.Editor.Tools.Graphics
             };
         }
 
+#if UNITY_2020_1_OR_NEWER
         // --- Helper: Ensure a LightingSettings asset exists ---
         private static LightingSettings EnsureLightingSettings()
         {
@@ -408,6 +423,7 @@ namespace MCPForUnity.Editor.Tools.Graphics
             }
             catch { return null; }
         }
+#endif
 
         // --- Helper: Find a GameObject by name or instanceID ---
         private static GameObject FindGameObject(string target)
@@ -424,6 +440,7 @@ namespace MCPForUnity.Editor.Tools.Graphics
             return GameObject.Find(target);
         }
 
+#if UNITY_2020_1_OR_NEWER
         // --- Helper: Read bounceCount with version fallback ---
         private static void ReadBounceCount(LightingSettings settings, Dictionary<string, object> data)
         {
@@ -559,6 +576,7 @@ namespace MCPForUnity.Editor.Tools.Graphics
 
             return false;
         }
+#endif
 
         // --- Helper: Parse enum from JToken (string name or int value) ---
         private static bool TryParseEnum<T>(JToken value, out T result) where T : struct, Enum

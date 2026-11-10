@@ -38,6 +38,14 @@ namespace MCPForUnity.Editor.Security
             Run("delete-generic-password", "-s", Service, "-a", providerId);
         }
 
+        // netstandard2.0 has no ProcessStartInfo.ArgumentList; emulate with quoted args
+        private static void AppendArg(System.Diagnostics.ProcessStartInfo psi, string arg)
+        {
+            bool needsQuote = arg.Length == 0 || arg.IndexOfAny(new[] { ' ', '\t', '"', '\'' }) >= 0;
+            string quoted = needsQuote ? "\"" + arg.Replace("\"", "\\\"") + "\"" : arg;
+            psi.Arguments += (psi.Arguments.Length > 0 ? " " : "") + quoted;
+        }
+
         private static (int code, string stdout, string stderr) Run(params string[] args)
         {
             try
@@ -49,7 +57,7 @@ namespace MCPForUnity.Editor.Security
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                 };
-                foreach (string a in args) psi.ArgumentList.Add(a);
+                foreach (string a in args) AppendArg(psi, a);
                 using (var p = Process.Start(psi))
                 {
                     string outp = p.StandardOutput.ReadToEnd();

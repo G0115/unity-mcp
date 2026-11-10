@@ -264,7 +264,11 @@ namespace MCPForUnity.Editor.Tools.Cameras
         {
             if (go == null) return;
             EditorUtility.SetDirty(go);
+            #if UNITY_2020_1_OR_NEWER
             var prefabStage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+#else
+            var prefabStage = UnityEditor.Experimental.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+#endif
             if (prefabStage != null)
                 UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(prefabStage.scene);
             else

@@ -629,7 +629,9 @@ namespace MCPForUnity.Editor.Tools.Graphics
             if (targetType.IsEnum)
             {
                 string str = value.ToString();
-                if (Enum.TryParse(targetType, str, true, out object enumVal))
+                object enumVal = null;
+                try { enumVal = Enum.Parse(targetType, str, true); } catch (ArgumentException) { }
+                if (enumVal != null)
                     return enumVal;
                 // Try as int
                 if (int.TryParse(str, out int intVal))

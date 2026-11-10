@@ -560,7 +560,7 @@ print(json.dumps({'path': out, 'bytes': os.path.getsize(out), 'selection_only': 
         {
             string message = bloom?["message"]?.ToString() ?? "Bloom configured.";
             bool failed = bloom != null && bloom.Value<bool?>("success") == false;
-            return failed ? new ErrorResponse(message) : new SuccessResponse(message, bloom);
+            return failed ? (object)new ErrorResponse(message) : new SuccessResponse(message, bloom);
         }
 
         // -------------------------------------------------------- compare_screenshot

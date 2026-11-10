@@ -522,7 +522,7 @@ namespace MCPForUnity.External.Tommy
             if (collapsedItems.Count == 0)
                 return;
 
-            var hasRealValues = !collapsedItems.All(n => n.Value is TomlTable && !n.Value.IsInline || n.Value is TomlArray && n.Value.IsTableArray);
+            var hasRealValues = !collapsedItems.All(n => { var tt = n.Value as TomlTable; var ta = n.Value as TomlArray; return tt != null && !tt.IsInline || ta != null && ta.IsTableArray; });
 
             Comment?.AsComment(tw);
 
@@ -544,7 +544,7 @@ namespace MCPForUnity.External.Tommy
             foreach (var collapsedItem in collapsedItems)
             {
                 var key = collapsedItem.Key;
-                if (collapsedItem.Value is TomlArray && collapsedItem.Value.IsTableArray || collapsedItem.Value is TomlTable && !collapsedItem.Value.IsInline)
+                if (collapsedItem.Value is TomlArray arr && arr.IsTableArray || collapsedItem.Value is TomlTable tbl && !tbl.IsInline)
                 {
                     if (!first) tw.WriteLine();
                     first = false;
@@ -1663,7 +1663,7 @@ namespace MCPForUnity.External.Tommy
                     }
 
                     latestNode = currentNode;
-                    if (latestNode is TomlTable && latestNode.IsInline)
+                    if (latestNode is TomlTable tbl && tbl.IsInline)
                         return AddError($"Cannot assign {".".Join(path)} because it will edit an immutable table.");
                 }
 
@@ -1705,7 +1705,7 @@ namespace MCPForUnity.External.Tommy
                         continue;
                     }
 
-                    if (node is TomlTable && node.IsInline)
+                    if (node is TomlTable tbl && tbl.IsInline)
                     {
                         AddError($"Cannot create table {".".Join(path)} because it will edit an immutable table.");
                         return null;
@@ -1731,7 +1731,7 @@ namespace MCPForUnity.External.Tommy
                             return null;
                         }
 
-                        if (node is TomlTable && !node.isImplicit)
+                        if (node is TomlTable tbl2 && !tbl2.isImplicit)
                         {
                             AddError($"The table {".".Join(path)} is defined multiple times!");
                             return null;
@@ -1874,19 +1874,19 @@ namespace MCPForUnity.External.Tommy
          * A pattern to verify the integer value according to the TOML specification.
          */
         public static readonly Regex IntegerPattern =
-            new(@"^(\+|-)?(?!_)(0|(?!0)(_?\d)*)$", RegexOptions.Compiled);
+            new Regex(@"^(\+|-)?(?!_)(0|(?!0)(_?\d)*)$", RegexOptions.Compiled);
 
         /**
          * A pattern to verify a special 0x, 0o and 0b forms of an integer according to the TOML specification.
          */
         public static readonly Regex BasedIntegerPattern =
-            new(@"^0(?<base>x|b|o)(?!_)(_?[0-9A-F])*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            new Regex(@"^0(?<base>x|b|o)(?!_)(_?[0-9A-F])*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         /**
          * A pattern to verify the float value according to the TOML specification.
          */
         public static readonly Regex FloatPattern =
-            new(@"^(\+|-)?(?!_)(0|(?!0)(_?\d)+)(((e(\+|-)?(?!_)(_?\d)+)?)|(\.(?!_)(_?\d)+(e(\+|-)?(?!_)(_?\d)+)?))$",
+            new Regex(@"^(\+|-)?(?!_)(0|(?!0)(_?\d)+)(((e(\+|-)?(?!_)(_?\d)+)?)|(\.(?!_)(_?\d)+(e(\+|-)?(?!_)(_?\d)+)?))$",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         /**
@@ -2066,9 +2066,9 @@ namespace MCPForUnity.External.Tommy
             {
                 var c = txt[i];
 
-                string CodePoint(string txt, ref int i, char c) => char.IsSurrogatePair(txt, i)
-                    ? $"\\U{char.ConvertToUtf32(txt, i++):X8}"
-                    : $"\\u{(ushort)c:X4}";
+                string CodePoint(string s, ref int idx, char ch) => char.IsSurrogatePair(s, idx)
+                    ? $"\\U{char.ConvertToUtf32(s, idx++):X8}"
+                    : $"\\u{(ushort)ch:X4}";
 
                 string toAppend;
                 if (c == '\b') toAppend = @"\b";
@@ -2116,11 +2116,11 @@ namespace MCPForUnity.External.Tommy
                 if (num >= txt.Length) break;
                 var c = txt[next];
 
-                string CodePoint(int next, string txt, ref int num, int size)
+                string CodePoint(int pos, string s, ref int counter, int size)
                 {
-                    if (next + size >= txt.Length) throw new Exception("Undefined escape sequence!");
-                    num += size;
-                    return char.ConvertFromUtf32(Convert.ToInt32(txt.Substring(next + 1, size), 16));
+                    if (pos + size >= s.Length) throw new Exception("Undefined escape sequence!");
+                    counter += size;
+                    return char.ConvertFromUtf32(Convert.ToInt32(s.Substring(pos + 1, size), 16));
                 }
 
                 string toAppend;

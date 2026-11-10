@@ -63,11 +63,19 @@ namespace MCPForUnity.Editor.Tools.Build
             }
         }
 
+#if UNITY_2021_1_OR_NEWER
         public static NamedBuildTarget GetNamedBuildTarget(BuildTarget target)
         {
             return NamedBuildTarget.FromBuildTargetGroup(GetTargetGroup(target));
         }
+#else
+        public static BuildTargetGroup GetNamedBuildTarget(BuildTarget target)
+        {
+            return GetTargetGroup(target);
+        }
+#endif
 
+#if UNITY_2021_1_OR_NEWER
         public static string TryResolveNamedBuildTarget(string name, out NamedBuildTarget namedTarget)
         {
             if (!TryResolveBuildTarget(name, out var buildTarget))
@@ -88,6 +96,26 @@ namespace MCPForUnity.Editor.Tools.Build
             namedTarget = NamedBuildTarget.FromBuildTargetGroup(targetGroup);
             return null;
         }
+#else
+        public static string TryResolveNamedBuildTarget(string name, out BuildTargetGroup namedTarget)
+        {
+            if (!TryResolveBuildTarget(name, out var buildTarget))
+            {
+                namedTarget = BuildTargetGroup.Unknown;
+                return GetUnknownBuildTargetMessage(name);
+            }
+
+            namedTarget = GetTargetGroup(buildTarget);
+            if (namedTarget == BuildTargetGroup.Unknown)
+            {
+                return IsVisionOSTarget(buildTarget)
+                    ? "VisionOS build target is available, but its BuildTargetGroup is not exposed by this Unity editor installation."
+                    : $"Build target group could not be resolved for target '{buildTarget}'.";
+            }
+
+            return null;
+        }
+#endif
 
         public static string GetUnknownBuildTargetMessage(string name)
         {
@@ -154,12 +182,17 @@ namespace MCPForUnity.Editor.Tools.Build
 
         public static int ResolveSubtarget(string subtarget)
         {
+#if UNITY_2020_1_OR_NEWER
             if (string.IsNullOrEmpty(subtarget))
                 return (int)StandaloneBuildSubtarget.Player;
             string lower = subtarget.ToLowerInvariant();
             if (lower == "server")
                 return (int)StandaloneBuildSubtarget.Server;
             return (int)StandaloneBuildSubtarget.Player;
+#else
+            // StandaloneBuildSubtarget doesn't exist before 2020.1; platform default applies
+            return 0;
+#endif
         }
     }
 }

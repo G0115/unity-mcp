@@ -369,7 +369,7 @@ namespace MCPForUnity.Editor.Tools
 
             try
             {
-                var allPackages = PackageInfo.GetAllRegisteredPackages();
+                var allPackages = PackageManagerCompat.GetAllRegisteredPackages();
                 var info = allPackages.FirstOrDefault(pkg =>
                     string.Equals(pkg.name, package, StringComparison.OrdinalIgnoreCase));
 
@@ -480,7 +480,7 @@ namespace MCPForUnity.Editor.Tools
                 registries.Add(newRegistry);
 
                 File.WriteAllText(manifestPath, manifest.ToString(Formatting.Indented));
-                Client.Resolve();
+                PackageManagerCompat.Resolve();
 
                 return new SuccessResponse(
                     $"Added scoped registry '{nameResult.Value}'.",
@@ -546,7 +546,7 @@ namespace MCPForUnity.Editor.Tools
                     manifest.Remove("scopedRegistries");
 
                 File.WriteAllText(manifestPath, manifest.ToString(Formatting.Indented));
-                Client.Resolve();
+                PackageManagerCompat.Resolve();
 
                 return new SuccessResponse($"Removed scoped registry '{removedName}'.");
             }
@@ -588,7 +588,7 @@ namespace MCPForUnity.Editor.Tools
         {
             try
             {
-                Client.Resolve();
+                PackageManagerCompat.Resolve();
                 return new SuccessResponse("Package resolution triggered. Unity will re-resolve all packages.");
             }
             catch (Exception e)
@@ -602,7 +602,7 @@ namespace MCPForUnity.Editor.Tools
         {
             try
             {
-                var allPackages = PackageInfo.GetAllRegisteredPackages();
+                var allPackages = PackageManagerCompat.GetAllRegisteredPackages();
                 return new SuccessResponse(
                     "Package manager is available.",
                     new
@@ -730,7 +730,7 @@ namespace MCPForUnity.Editor.Tools
             {
                 string name = PackageJobManager.ExtractPackageName(packageName);
 
-                var allPackages = PackageInfo.GetAllRegisteredPackages();
+                var allPackages = PackageManagerCompat.GetAllRegisteredPackages();
                 return allPackages
                     .Where(pkg => pkg.dependencies.Any(d =>
                         string.Equals(d.name, name, StringComparison.OrdinalIgnoreCase)))

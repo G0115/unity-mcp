@@ -87,12 +87,26 @@ namespace MCPForUnity.Editor.Security
 
         // ---------- crypto ----------
 
+        // netstandard2.0 has no ProcessStartInfo.ArgumentList; emulate with quoted args
+        private static void AppendArg(System.Diagnostics.ProcessStartInfo psi, string arg)
+        {
+            bool needsQuote = arg.Length == 0 || arg.IndexOfAny(new[] { ' ', '\t', '"', '\'' }) >= 0;
+            string quoted = needsQuote ? "\"" + arg.Replace("\"", "\\\"") + "\"" : arg;
+            psi.Arguments += (psi.Arguments.Length > 0 ? " " : "") + quoted;
+        }
+
         private void DeriveKeys(out byte[] encKey, out byte[] macKey)
         {
             byte[] master = LoadOrCreate(Path.Combine(_dir, "secret.bin"), 32);
             byte[] salt = LoadOrCreate(Path.Combine(_dir, "salt.bin"), 16);
             string password = Convert.ToBase64String(master) + "|" + MachineId();
+#if UNITY_2020_2_OR_NEWER
             using (var kdf = new Rfc2898DeriveBytes(password, salt, Iterations, HashAlgorithmName.SHA256))
+#else
+            // netstandard2.0 lacks the HashAlgorithmName overload (defaults to SHA1);
+            // key files written by different Unity versions are not interchangeable.
+            using (var kdf = new Rfc2898DeriveBytes(password, salt, Iterations))
+#endif
             {
                 byte[] material = kdf.GetBytes(64);
                 encKey = new byte[32];
@@ -210,8 +224,8 @@ namespace MCPForUnity.Editor.Security
                     RedirectStandardError = true,
                     RedirectStandardOutput = true,
                 };
-                psi.ArgumentList.Add(mode);
-                psi.ArgumentList.Add(path);
+                AppendArg(psi, mode);
+                AppendArg(psi, path);
                 using (var p = System.Diagnostics.Process.Start(psi)) p?.WaitForExit(2000);
             }
             catch { /* hardening is best-effort */ }

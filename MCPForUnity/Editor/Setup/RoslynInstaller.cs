@@ -95,7 +95,11 @@ namespace MCPForUnity.Editor.Setup
                         while (!request.isDone)
                             System.Threading.Thread.Sleep(50);
 
+#if UNITY_2020_2_OR_NEWER
                         if (request.result != UnityWebRequest.Result.Success)
+#else
+                        if (request.isNetworkError || request.isHttpError)
+#endif
                             throw new Exception($"Failed to download {packageId}: {request.error}");
 
                         byte[] nupkgBytes = request.downloadHandler.data;

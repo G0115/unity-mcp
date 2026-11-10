@@ -33,7 +33,7 @@ namespace MCPForUnity.Editor.Services.AssetGen
         private static readonly Dictionary<string, string> Errors = new Dictionary<string, string>();
         private static readonly Dictionary<string, DateTime> Attempts = new Dictionary<string, DateTime>();
         private static bool loaded;
-        private static readonly SemaphoreSlim RequestGate = new(1, 1);
+        private static readonly SemaphoreSlim RequestGate = new SemaphoreSlim(1, 1);
         private static DateTime nextRequestAt;
         public static event Action<string> Changed;
 

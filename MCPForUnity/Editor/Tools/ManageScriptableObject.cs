@@ -28,7 +28,7 @@ namespace MCPForUnity.Editor.Tools
         private const string CodeTargetNotFound = "target_not_found";
         private const string CodeAssetCreateFailed = "asset_create_failed";
 
-        private static readonly HashSet<string> ValidActions = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly HashSet<string> ValidActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             // NOTE: Action strings are normalized by NormalizeAction() (lowercased, '_'/'-' removed),
             // so we only need the canonical normalized forms here.
@@ -1424,7 +1424,7 @@ namespace MCPForUnity.Editor.Tools
             var s = AssetPathUtility.NormalizeSeparators(path);
             while (s.IndexOf("//", StringComparison.Ordinal) >= 0)
             {
-                s = s.Replace("//", "/", StringComparison.Ordinal);
+                s = s.Replace("//", "/");
             }
             return s;
         }

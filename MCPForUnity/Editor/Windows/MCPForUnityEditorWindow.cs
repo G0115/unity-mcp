@@ -770,18 +770,27 @@ namespace MCPForUnity.Editor.Windows
 
         private static void BatchUpmAdd(string[] packageIds, Action onComplete = null)
         {
+#if UNITY_2020_1_OR_NEWER
             var request = UnityEditor.PackageManager.Client.AddAndRemove(packageIds, null);
             EditorUtility.DisplayProgressBar("Installing Packages", $"Installing {packageIds.Length} package(s)...", 0.5f);
             PollUpmRequest(request, "install", onComplete);
+#else
+            BatchUpmAddLegacy(packageIds, 0, onComplete);
+#endif
         }
 
         private static void BatchUpmRemove(string[] packageIds, Action onComplete = null)
         {
+#if UNITY_2020_1_OR_NEWER
             var request = UnityEditor.PackageManager.Client.AddAndRemove(null, packageIds);
             EditorUtility.DisplayProgressBar("Removing Packages", $"Removing {packageIds.Length} package(s)...", 0.5f);
             PollUpmRequest(request, "remove", onComplete);
+#else
+            BatchUpmRemoveLegacy(packageIds, 0, onComplete);
+#endif
         }
 
+#if UNITY_2020_1_OR_NEWER
         private static void PollUpmRequest(UnityEditor.PackageManager.Requests.AddAndRemoveRequest request, string verb, Action onComplete)
         {
             EditorApplication.CallbackFunction pollCallback = null;
@@ -798,6 +807,60 @@ namespace MCPForUnity.Editor.Windows
             };
             EditorApplication.update += pollCallback;
         }
+
+#endif
+
+#if !UNITY_2020_1_OR_NEWER
+        private static void BatchUpmAddLegacy(string[] packageIds, int index, Action onComplete)
+        {
+            if (index >= packageIds.Length)
+            {
+                onComplete?.Invoke();
+                return;
+            }
+            EditorUtility.DisplayProgressBar("Installing Packages",
+                $"Installing {packageIds[index]} ({index + 1}/{packageIds.Length})...", (float)index / packageIds.Length);
+            var request = UnityEditor.PackageManager.Client.Add(packageIds[index]);
+            EditorApplication.CallbackFunction poll = null;
+            poll = () =>
+            {
+                if (!request.IsCompleted) return;
+                EditorApplication.update -= poll;
+                EditorUtility.ClearProgressBar();
+                if (request.Status == UnityEditor.PackageManager.StatusCode.Success)
+                    Debug.Log($"[MCP] Package {packageIds[index]} installed.");
+                else
+                    Debug.LogError($"[MCP] Package {packageIds[index]} failed: {request.Error?.message}");
+                BatchUpmAddLegacy(packageIds, index + 1, onComplete);
+            };
+            EditorApplication.update += poll;
+        }
+
+        private static void BatchUpmRemoveLegacy(string[] packageIds, int index, Action onComplete)
+        {
+            if (index >= packageIds.Length)
+            {
+                onComplete?.Invoke();
+                return;
+            }
+            EditorUtility.DisplayProgressBar("Removing Packages",
+                $"Removing {packageIds[index]} ({index + 1}/{packageIds.Length})...", (float)index / packageIds.Length);
+            var request = UnityEditor.PackageManager.Client.Remove(packageIds[index]);
+            EditorApplication.CallbackFunction poll = null;
+            poll = () =>
+            {
+                if (!request.IsCompleted) return;
+                EditorApplication.update -= poll;
+                EditorUtility.ClearProgressBar();
+                if (request.Status == UnityEditor.PackageManager.StatusCode.Success)
+                    Debug.Log($"[MCP] Package {packageIds[index]} removed.");
+                else
+                    Debug.LogError($"[MCP] Package {packageIds[index]} failed: {request.Error?.message}");
+                BatchUpmRemoveLegacy(packageIds, index + 1, onComplete);
+            };
+            EditorApplication.update += poll;
+        }
+#endif
 
         private static void UninstallRoslyn()
         {

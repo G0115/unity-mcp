@@ -20,7 +20,7 @@ namespace MCPForUnity.Editor.Tools
         internal const string UiToolkitUnsupported =
             "UI Toolkit runtime (UIDocument/PanelSettings) requires Unity 2021.1+ and is not available in this Unity version.";
 
-        private static readonly HashSet<string> ValidExtensions = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly HashSet<string> ValidExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             ".uxml", ".uss"
         };
@@ -511,6 +511,7 @@ namespace MCPForUnity.Editor.Tools
 #endif
         }
 
+#if UNITY_2021_1_OR_NEWER
         private static PanelSettings CreateDefaultPanelSettings(string path)
         {
 #if UNITY_2021_1_OR_NEWER
@@ -528,7 +529,9 @@ namespace MCPForUnity.Editor.Tools
             return null;
 #endif
         }
+#endif
 
+#if UNITY_2021_1_OR_NEWER
         /// <summary>
         /// Generic, data-driven applicator for PanelSettings properties.
         /// Accepts a flat JObject where each key maps to a PanelSettings property.
@@ -625,7 +628,9 @@ namespace MCPForUnity.Editor.Tools
             }
 #endif
         }
+#endif
 
+#if UNITY_2021_1_OR_NEWER
         private static void ApplyDynamicAtlasSettings(PanelSettings ps, JObject da, List<string> changes)
         {
 #if UNITY_2021_1_OR_NEWER
@@ -644,6 +649,7 @@ namespace MCPForUnity.Editor.Tools
             changes.Add("dynamicAtlasSettings");
 #endif
         }
+#endif
 
         // ── Tiny helpers to keep the switch compact ─────────────────────────
 

@@ -26,7 +26,7 @@ namespace MCPForUnity.Editor.Setup
         private Vector2 _scroll;
         private volatile bool _isRunning;
         private readonly ConcurrentQueue<string> _pendingLogs = new ConcurrentQueue<string>();
-        private readonly StringBuilder _logBuilder = new(4096);
+        private readonly StringBuilder _logBuilder = new StringBuilder(4096);
 
         public static void OpenWindow()
         {
