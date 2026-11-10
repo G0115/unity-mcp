@@ -4,10 +4,8 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using MCPForUnity.Editor.Constants;
-using MCPForUnity.Editor.Helpers;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.UIElements;
 
 namespace MCPForUnity.Editor.Windows
 {
@@ -16,15 +14,22 @@ namespace MCPForUnity.Editor.Windows
     /// </summary>
     public class EditorPrefsWindow : EditorWindow
     {
-        // UI Elements
-        private ScrollView scrollView;
-        private VisualElement prefsContainer;
-        private TextField searchField;
+        private static readonly string[] TypeChoices = { "String", "Int", "Float", "Bool" };
+
         private string searchFilter = "";
+
+        // Add-new-row state (shown on demand, replaces the "add-new-row display:none" UXML block)
+        private bool showAddNewRow;
+        private string newKeyValue = "";
+        private string newValueValue = "";
+        private int newTypeIndex;
 
         // Data
         private List<EditorPrefItem> currentPrefs = new List<EditorPrefItem>();
         private HashSet<string> knownMcpKeys = new HashSet<string>();
+
+        // Per-row edit state for the IMGUI prefs list (replaces the EditorPrefItem.uxml template)
+        private readonly List<PrefRow> rows = new List<PrefRow>();
 
         // Type mapping for known EditorPrefs
         private readonly Dictionary<string, EditorPrefType> knownPrefTypes = new Dictionary<string, EditorPrefType>
@@ -44,7 +49,7 @@ namespace MCPForUnity.Editor.Windows
             { EditorPrefKeys.ProjectScopedToolsLocalHttp, EditorPrefType.Bool },
             { EditorPrefKeys.AllowLanHttpBind, EditorPrefType.Bool },
             { EditorPrefKeys.AllowInsecureRemoteHttp, EditorPrefType.Bool },
-            
+
             // Integer prefs
             { EditorPrefKeys.UnitySocketPort, EditorPrefType.Int },
             { EditorPrefKeys.ValidationLevel, EditorPrefType.Int },
@@ -52,7 +57,7 @@ namespace MCPForUnity.Editor.Windows
             { EditorPrefKeys.LastStdIoUpgradeVersion, EditorPrefType.Int },
             { EditorPrefKeys.LastLocalHttpServerPid, EditorPrefType.Int },
             { EditorPrefKeys.LastLocalHttpServerPort, EditorPrefType.Int },
-            
+
             // String prefs
             { EditorPrefKeys.EditorWindowActivePanel, EditorPrefType.String },
             { EditorPrefKeys.ClaudeCliPathOverride, EditorPrefType.String },
@@ -78,8 +83,18 @@ namespace MCPForUnity.Editor.Windows
             { EditorPrefKeys.LastLocalHttpServerInstanceToken, EditorPrefType.String },
         };
 
-        // Templates
-        private VisualTreeAsset itemTemplate;
+        private Vector2 scrollPosition;
+
+        /// <summary>
+        /// Editable state for one prefs row in the IMGUI list.
+        /// </summary>
+        private class PrefRow
+        {
+            public EditorPrefItem Item;
+            public string TextValue;
+            public bool BoolValue;
+            public int TypeIndex;
+        }
 
         /// <summary>
         /// Show the EditorPrefs window
@@ -91,88 +106,105 @@ namespace MCPForUnity.Editor.Windows
             window.Show();
         }
 
-#if UNITY_2021_1_OR_NEWER
-        public void CreateGUI() => BuildUI();
-#else
         private void OnEnable()
         {
-            // Pre-2021 has no CreateGUI callback — build the UI here instead.
-            rootVisualElement?.Clear();
-            BuildUI();
-        }
-#endif
-
-        private void BuildUI()
-        {
-            // Clear search filter on GUI recreation to avoid stale filtered results
+            // Reset transient UI state to avoid stale filtered results
             searchFilter = "";
-
-            string basePath = AssetPathUtility.GetMcpPackageRootPath();
-
-            // Load UXML
-            var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(
-                $"{basePath}/Editor/Windows/EditorPrefs/EditorPrefsWindow.uxml"
-            );
-
-            if (visualTree == null)
-            {
-                McpLog.Error("Failed to load EditorPrefsWindow.uxml template");
-                return;
-            }
-
-            // Load item template
-            itemTemplate = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(
-                $"{basePath}/Editor/Windows/EditorPrefs/EditorPrefItem.uxml"
-            );
-
-            if (itemTemplate == null)
-            {
-                McpLog.Error("Failed to load EditorPrefItem.uxml template");
-                return;
-            }
-
-            visualTree.CloneTree(rootVisualElement);
-
-            // Add search bar container at the top
-            var searchContainer = new VisualElement();
-            searchContainer.style.flexDirection = FlexDirection.Row;
-            searchContainer.style.marginTop = 8;
-            searchContainer.style.marginBottom = 20;
-            searchContainer.style.marginLeft = 4;
-            searchContainer.style.marginRight = 4;
-
-            searchField = new TextField("Search");
-            searchField.style.flexGrow = 1;
-            searchField.style.height = 28;
-            searchField.style.paddingTop = 2;
-            searchField.style.paddingBottom = 2;
-            searchField.labelElement.style.unityFontStyleAndWeight = FontStyle.Bold;
-            searchField.RegisterValueChangedCallback(evt =>
-            {
-                searchFilter = evt.newValue ?? "";
-                RefreshPrefs();
-            });
-
-            var refreshButton = new Button(RefreshPrefs);
-            refreshButton.text = "↻";
-            refreshButton.tooltip = "Refresh prefs";
-            refreshButton.style.width = 30;
-            refreshButton.style.height = 28;
-            refreshButton.style.marginLeft = 6;
-            refreshButton.style.backgroundColor = new Color(0.9f, 0.5f, 0.1f);
-
-            searchContainer.Add(searchField);
-            searchContainer.Add(refreshButton);
-            rootVisualElement.Insert(0, searchContainer);
-
-            // Get references
-            scrollView = rootVisualElement.Q<ScrollView>("scroll-view");
-            prefsContainer = rootVisualElement.Q<VisualElement>("prefs-container");
+            showAddNewRow = false;
 
             // Load known MCP keys
             LoadKnownMcpKeys();
 
             // Load initial data
+            RefreshPrefs();
+        }
+
+        private void OnGUI()
+        {
+            EditorGUILayout.LabelField("EditorPrefs Manager", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(
+                "Manage MCP for Unity EditorPrefs. Useful for development and testing.",
+                EditorStyles.wordWrappedLabel);
+
+            EditorGUILayout.Space();
+
+            // Search bar
+            EditorGUILayout.BeginHorizontal();
+            string newFilter = EditorGUILayout.TextField("Search", searchFilter);
+            if (newFilter != searchFilter)
+            {
+                searchFilter = newFilter ?? "";
+                RefreshPrefs();
+            }
+            if (GUILayout.Button(new GUIContent("↻", "Refresh prefs"), GUILayout.Width(30f), GUILayout.Height(18f)))
+            {
+                RefreshPrefs();
+            }
+            EditorGUILayout.EndHorizontal();
+
+            if (GUILayout.Button("Add Pref", GUILayout.Width(80f)))
+            {
+                showAddNewRow = true;
+            }
+
+            // Add-new-row (hidden until "Add Pref" is clicked)
+            if (showAddNewRow)
+            {
+                DrawAddNewRow();
+            }
+
+            EditorGUILayout.Space();
+
+            // Prefs list
+            scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition);
+            foreach (var row in rows)
+            {
+                DrawPrefRow(row);
+            }
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawAddNewRow()
+        {
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.LabelField("Add New Pref", EditorStyles.boldLabel);
+
+            newKeyValue = EditorGUILayout.TextField("Key", newKeyValue);
+            newValueValue = EditorGUILayout.TextField("Value", newValueValue);
+            newTypeIndex = EditorGUILayout.Popup("Type", newTypeIndex, TypeChoices);
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Create"))
+            {
+                OnCreateNewPref();
+            }
+            if (GUILayout.Button("Cancel"))
+            {
+                showAddNewRow = false;
+                newKeyValue = "";
+                newValueValue = "";
+                newTypeIndex = 0;
+            }
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.EndVertical();
+        }
+
+        private void OnCreateNewPref()
+        {
+            if (string.IsNullOrEmpty(newKeyValue))
+            {
+                EditorUtility.DisplayDialog("Error", "Key cannot be empty.", "OK");
+                return;
+            }
+
+            SaveValue(newKeyValue, newValueValue ?? "", (EditorPrefType)newTypeIndex);
+
+            showAddNewRow = false;
+            newKeyValue = "";
+            newValueValue = "";
+            newTypeIndex = 0;
+
             RefreshPrefs();
         }
 
@@ -193,7 +225,7 @@ namespace MCPForUnity.Editor.Windows
         private void RefreshPrefs()
         {
             currentPrefs.Clear();
-            prefsContainer.Clear();
+            rows.Clear();
 
             // Get all EditorPrefs keys
             var allKeys = new List<string>();
@@ -215,7 +247,7 @@ namespace MCPForUnity.Editor.Windows
             allKeys.Sort();
 
             // Pre-trim filter once outside the loop
-            var filter = searchFilter?.Trim();
+            var filter = searchFilter != null ? searchFilter.Trim() : null;
 
             // Create items for existing prefs
             foreach (var key in allKeys)
@@ -234,10 +266,24 @@ namespace MCPForUnity.Editor.Windows
                     if (item != null)
                     {
                         currentPrefs.Add(item);
-                        prefsContainer.Add(CreateItemUI(item));
+                        rows.Add(CreateRowState(item));
                     }
                 }
             }
+        }
+
+        private static PrefRow CreateRowState(EditorPrefItem item)
+        {
+            bool boolValue;
+            bool.TryParse(item.Value, out boolValue);
+
+            return new PrefRow
+            {
+                Item = item,
+                TextValue = item.Value,
+                BoolValue = boolValue,
+                TypeIndex = (int)item.Type
+            };
         }
 
         private List<string> GetAllMcpKeys()
@@ -321,39 +367,98 @@ namespace MCPForUnity.Editor.Windows
             return item;
         }
 
-        private VisualElement CreateItemUI(EditorPrefItem item)
+        private void DrawPrefRow(PrefRow row)
         {
-            if (itemTemplate == null)
+            EditorPrefItem item = row.Item;
+
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.BeginHorizontal();
+
+            EditorGUILayout.LabelField(
+                new GUIContent(item.Key, item.IsKnown ? "Known MCP pref" : null),
+                EditorStyles.boldLabel,
+                GUILayout.MinWidth(160f));
+
+            // Type dropdown
+            EditorGUI.BeginChangeCheck();
+            int selectedType = EditorGUILayout.Popup(row.TypeIndex, TypeChoices, GUILayout.Width(70f));
+            if (EditorGUI.EndChangeCheck() && selectedType != row.TypeIndex)
             {
-                McpLog.Error("Item template not loaded");
-                return new VisualElement();
+                bool wasBool = row.TypeIndex == (int)EditorPrefType.Bool;
+                row.TypeIndex = selectedType;
+                bool isBool = selectedType == (int)EditorPrefType.Bool;
+                if (isBool && !wasBool)
+                {
+                    bool parsed;
+                    bool.TryParse(row.TextValue, out parsed);
+                    row.BoolValue = parsed;
+                }
+                else if (!isBool && wasBool)
+                {
+                    row.TextValue = row.BoolValue ? "True" : "False";
+                }
             }
 
-            var itemElement = itemTemplate.CloneTree();
-
-            // Set values
-            itemElement.Q<Label>("key-label").text = item.Key;
-            var valueField = itemElement.Q<TextField>("value-field");
-            valueField.value = item.Value;
-
-            var typeDropdown = itemElement.Q<DropdownField>("type-dropdown");
-            typeDropdown.index = (int)item.Type;
-
-            // Buttons
-            var saveButton = itemElement.Q<Button>("save-button");
-
-            // Style unset items
+            // Value control (by type; unset prefs show their default hint instead)
             if (item.IsUnset)
             {
-                valueField.SetEnabled(false);
-                valueField.style.opacity = 0.6f;
-                saveButton.SetEnabled(false);
+                EditorGUILayout.LabelField(row.TextValue, EditorStyles.miniLabel);
+            }
+            else
+            {
+                switch ((EditorPrefType)row.TypeIndex)
+                {
+                    case EditorPrefType.Bool:
+                        row.BoolValue = EditorGUILayout.Toggle(row.BoolValue, GUILayout.Width(60f));
+                        break;
+                    case EditorPrefType.Int:
+                        int intValue;
+                        int.TryParse(row.TextValue, out intValue);
+                        row.TextValue = EditorGUILayout.IntField(intValue).ToString();
+                        break;
+                    case EditorPrefType.Float:
+                        float floatValue;
+                        float.TryParse(row.TextValue, out floatValue);
+                        row.TextValue = EditorGUILayout.FloatField(floatValue).ToString();
+                        break;
+                    default:
+                        row.TextValue = EditorGUILayout.TextField(row.TextValue ?? "");
+                        break;
+                }
             }
 
-            // Callbacks
-            saveButton.clicked += () => SavePref(item, valueField.value, (EditorPrefType)typeDropdown.index);
+            // Action buttons
+            using (new EditorGUI.DisabledScope(item.IsUnset))
+            {
+                if (GUILayout.Button(new GUIContent("✓", "Save changes"), GUILayout.Width(24f)))
+                {
+                    SavePref(item, GetRowValueText(row), (EditorPrefType)row.TypeIndex);
+                }
+            }
+            if (GUILayout.Button(new GUIContent("✕", "Delete pref"), GUILayout.Width(24f)))
+            {
+                if (EditorUtility.DisplayDialog(
+                        "Delete Pref",
+                        $"Delete EditorPref '{item.Key}'?",
+                        "Delete",
+                        "Cancel"))
+                {
+                    EditorPrefs.DeleteKey(item.Key);
+                    RefreshPrefs();
+                }
+            }
 
-            return itemElement;
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.EndVertical();
+        }
+
+        private static string GetRowValueText(PrefRow row)
+        {
+            if ((EditorPrefType)row.TypeIndex == EditorPrefType.Bool)
+            {
+                return row.BoolValue ? "True" : "False";
+            }
+            return row.TextValue ?? "";
         }
 
         private void SavePref(EditorPrefItem item, string newValue, EditorPrefType newType)

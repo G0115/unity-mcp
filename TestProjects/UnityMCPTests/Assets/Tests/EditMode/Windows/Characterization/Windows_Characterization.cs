@@ -2,10 +2,13 @@ using System;
 using System.Linq;
 using System.Reflection;
 using NUnit.Framework;
-using MCPForUnity.Editor.Windows;
-using MCPForUnity.Editor.Windows.Components.Connection;
 using MCPForUnity.Editor.Constants;
-using UnityEngine.UIElements;
+using MCPForUnity.Editor.Windows;
+using MCPForUnity.Editor.Windows.Components.AssetGen;
+using MCPForUnity.Editor.Windows.Components.Advanced;
+using MCPForUnity.Editor.Windows.Components.ClientConfig;
+using MCPForUnity.Editor.Windows.Components.Connection;
+using UnityEngine;
 
 namespace MCPForUnityTests.Editor.Windows.Characterization
 {
@@ -14,9 +17,12 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
     /// These tests capture CURRENT behavior without refactoring.
     /// They serve as a regression baseline for future refactoring work.
     ///
-    /// Based on analysis in: MCPForUnity/Editor/Windows/Tests/CHARACTERIZATION_ANALYSIS.md
+    /// The windows and section controllers are IMGUI (OnGUI/EditorGUILayout): each section keeps
+    /// its control state in plain private fields and renders it through a public Draw() method,
+    /// so these tests anchor on that structure (fields, nested state types, Draw/handler methods).
     ///
-    /// Covers: MCPSetupWindow, EditorPrefsWindow, McpConnectionSection, and component patterns
+    /// Covers: MCPForUnityEditorWindow, MCPSetupWindow, EditorPrefsWindow, and the section
+    /// controllers (Connection, Advanced, ClientConfig, AssetGen, Blender Bridge).
     /// </summary>
     [TestFixture]
     public class WindowsCharacterizationTests : TransportPreferenceTestBase
@@ -24,23 +30,27 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         #region Section 1: EditorPrefsWindow Tests (3 tests)
 
         /// <summary>
-        /// Current behavior: EditorPrefsWindow caches 2 base UI elements (ScrollView, Container)
-        /// plus N dynamic items created from EditorPrefs.
+        /// Current behavior: EditorPrefsWindow keeps no VisualTree; each prefs row is one plain
+        /// PrefRow state object in a List, scrolled by a Vector2 scroll position.
         /// </summary>
         [Test]
-        public void EditorPrefsWindow_CachesBaseUIElements_ScrollViewAndContainer()
+        public void EditorPrefsWindow_KeepsRowStateInPlainPrefRowObjects_InsteadOfVisualTree()
         {
-            // Verify field existence for base UI caching
             var type = typeof(EditorPrefsWindow);
-            var scrollViewField = type.GetField("scrollView", BindingFlags.NonPublic | BindingFlags.Instance);
-            var containerField = type.GetField("prefsContainer", BindingFlags.NonPublic | BindingFlags.Instance);
 
-            Assert.IsNotNull(scrollViewField, "Should have scrollView field");
-            Assert.IsNotNull(containerField, "Should have prefsContainer field");
-            Assert.AreEqual(typeof(ScrollView), scrollViewField.FieldType);
-            Assert.AreEqual(typeof(VisualElement), containerField.FieldType);
+            var prefRow = type.GetNestedType("PrefRow", BindingFlags.NonPublic);
+            Assert.IsNotNull(prefRow, "Should have a private PrefRow row-state class");
+            foreach (string member in new[] { "Item", "TextValue", "BoolValue", "TypeIndex" })
+                Assert.IsNotNull(prefRow.GetField(member), $"PrefRow should have a {member} field");
 
-            Assert.Pass("EditorPrefsWindow caches 2 base UI elements: ScrollView + Container");
+            var rowsField = type.GetField("rows", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.IsNotNull(rowsField, "Should have a rows field");
+            Assert.IsTrue(rowsField.FieldType.IsGenericType && rowsField.FieldType.GetGenericArguments()[0] == prefRow,
+                "rows should be a List<PrefRow>");
+
+            var scrollField = type.GetField("scrollPosition", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.IsNotNull(scrollField, "Should have a scrollPosition field");
+            Assert.AreEqual(typeof(Vector2), scrollField.FieldType, "Scrolling is a Vector2 scroll position.");
         }
 
         /// <summary>
@@ -50,17 +60,6 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         [Test]
         public void EditorPrefsWindow_UsesTypeDetectionLogic_ForUnknownPrefs()
         {
-            // Document the type detection approach
-            var detectionSteps = new[]
-            {
-                "1. Check knownPrefTypes dictionary for known keys",
-                "2. For unknown keys: EditorPrefs.GetString() first",
-                "3. Try int.TryParse()",
-                "4. Try float.TryParse()",
-                "5. Try bool.TryParse()",
-                "6. Default to String if all fail"
-            };
-
             // Verify the enum exists
             var type = typeof(EditorPrefsWindow);
             var enumType = type.Assembly.GetType("MCPForUnity.Editor.Windows.EditorPrefType");
@@ -72,24 +71,28 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
             Assert.Contains("Float", enumValues);
             Assert.Contains("Bool", enumValues);
 
-            Assert.Pass($"Type detection flow: {string.Join("; ", detectionSteps)}");
+            // Detection lives in CreateEditorPrefItem; each detected item becomes one IMGUI row.
+            Assert.IsNotNull(type.GetMethod("CreateEditorPrefItem", BindingFlags.NonPublic | BindingFlags.Instance),
+                "type detection should live in CreateEditorPrefItem");
+            Assert.IsNotNull(type.GetMethod("CreateRowState", BindingFlags.NonPublic | BindingFlags.Instance),
+                "each pref should get one row state via CreateRowState");
         }
 
         /// <summary>
-        /// Current behavior: EditorPrefsWindow registers callbacks per-item for Save buttons
-        /// rather than using RegisterValueChangedCallback pattern.
+        /// Current behavior: EditorPrefsWindow draws each row from its state object and saves
+        /// through SavePref when the row's save button is pressed — no per-item callbacks are
+        /// registered up front anymore.
         /// </summary>
         [Test]
-        public void EditorPrefsWindow_RegistersPerItemCallbacks_ForSaveButtons()
+        public void EditorPrefsWindow_DrawsAndSavesPerRow_ViaDrawPrefRowAndSavePref()
         {
-            // Document the callback pattern
             var type = typeof(EditorPrefsWindow);
-            var createItemMethod = type.GetMethod("CreateItemUI", BindingFlags.NonPublic | BindingFlags.Instance);
-
-            Assert.IsNotNull(createItemMethod, "Should have CreateItemUI method");
-
-            var pattern = "Each item gets: saveButton.clicked += () => SavePref(item, value, type)";
-            Assert.Pass($"Callback pattern: {pattern}");
+            Assert.IsNotNull(type.GetMethod("DrawPrefRow", BindingFlags.NonPublic | BindingFlags.Instance),
+                "rows should be drawn by DrawPrefRow(row)");
+            Assert.IsNotNull(type.GetMethod("SavePref", BindingFlags.NonPublic | BindingFlags.Instance),
+                "row saves should go through SavePref(item, value, type)");
+            Assert.IsNotNull(type.GetMethod("GetRowValueText", BindingFlags.NonPublic | BindingFlags.Static),
+                "the row's value text should be computed by GetRowValueText(row)");
         }
 
         #endregion
@@ -97,83 +100,91 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         #region Section 2: MCPSetupWindow Tests (3 tests)
 
         /// <summary>
-        /// Current behavior: MCPSetupWindow caches 13+ UI elements in CreateGUI
-        /// without a separate CacheUIElements method.
+        /// Current behavior: MCPSetupWindow keeps dependency state in three DependencyDisplay
+        /// structs (Python, uv, Git) plus plain wizard/status fields — no cached UI elements.
         /// </summary>
         [Test]
-        public void MCPSetupWindow_CachesMultipleUIElements_InCreateGUI()
+        public void MCPSetupWindow_KeepsDependencyStateInDependencyDisplayFields()
         {
             var type = typeof(MCPSetupWindow);
-            var fields = type.GetFields(BindingFlags.NonPublic | BindingFlags.Instance);
+            var displayType = typeof(MCPSetupWindow.DependencyDisplay);
 
-            // Count VisualElement-related fields
-            var uiFields = fields.Where(f =>
-                f.FieldType == typeof(VisualElement) ||
-                f.FieldType == typeof(Label) ||
-                f.FieldType == typeof(Button)
-            ).ToArray();
-
-            Assert.GreaterOrEqual(uiFields.Length, 10, "Should have 10+ UI element fields");
-
-            var expectedFields = new[]
+            foreach (string fieldName in new[] { "pythonDisplay", "uvDisplay", "gitDisplay" })
             {
-                "pythonIndicator", "pythonVersion", "pythonDetails",
-                "uvIndicator", "uvVersion", "uvDetails",
-                "statusMessage", "installationSection",
-                "openPythonLinkButton", "openUvLinkButton",
-                "refreshButton", "doneButton"
-            };
+                var field = type.GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+                Assert.IsNotNull(field, $"Should have a {fieldName} field");
+                Assert.AreEqual(displayType, field.FieldType, $"{fieldName} should be a DependencyDisplay");
+            }
 
-            Assert.Pass($"MCPSetupWindow caches {uiFields.Length} UI elements including: {string.Join(", ", expectedFields.Take(5))}...");
+            foreach (string fieldName in new[]
+                     {
+                         "clientsStepActive", "statusMessageText", "statusMessageColor",
+                         "showInstallationSection", "installationInstructionsText",
+                         "showInstallUvButton", "installUvButtonEnabled"
+                     })
+            {
+                Assert.IsNotNull(type.GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance),
+                    $"Should have a {fieldName} field");
+            }
+
+            // DependencyDisplay carries the whole rendered row: version, details, colour and dot.
+            Assert.IsNotNull(displayType.GetField("Version"), "DependencyDisplay.Version");
+            Assert.IsNotNull(displayType.GetField("Details"), "DependencyDisplay.Details");
+            Assert.IsNotNull(displayType.GetField("DetailsColor"), "DependencyDisplay.DetailsColor");
+            Assert.IsNotNull(displayType.GetField("Indicator"), "DependencyDisplay.Indicator");
         }
 
         /// <summary>
-        /// Current behavior: MCPSetupWindow modifies CSS class lists to show status
-        /// (adds/removes "valid"/"invalid" classes on indicators).
+        /// Current behavior: MCPSetupWindow computes each row's status via the pure static
+        /// BuildDependencyDisplay, mapping availability to a Valid/Invalid/Neutral indicator and
+        /// a details colour (no CSS class lists anymore).
         /// </summary>
         [Test]
-        public void MCPSetupWindow_ModifiesClassListForStatus_ValidInvalidPattern()
+        public void MCPSetupWindow_BuildDependencyDisplay_MapsStatusToIndicatorAndColor()
         {
             var type = typeof(MCPSetupWindow);
-            // Static as well as Instance: the method takes every element it touches as an argument,
-            // so it carries no instance state and is declared static. Looking it up with Instance
-            // alone returned null and failed this test rather than reporting a behaviour change.
-            var method = type.GetMethod("UpdateDependencyStatus",
-                BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance);
+            var method = type.GetMethod("BuildDependencyDisplay",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
 
-            Assert.IsNotNull(method, "Should have UpdateDependencyStatus method");
+            Assert.IsNotNull(method, "Should have BuildDependencyDisplay");
+            Assert.AreEqual(1, method.GetParameters().Length, "BuildDependencyDisplay takes the DependencyStatus");
 
-            var classListPattern = new[]
-            {
-                "indicator.RemoveFromClassList(\"invalid\")",
-                "indicator.AddToClassList(\"valid\")",
-                "Or vice versa for unavailable dependencies"
-            };
-
-            Assert.Pass($"Class list modification: {string.Join("; ", classListPattern)}");
+            var statusKind = type.GetNestedType("StatusKind", BindingFlags.NonPublic);
+            Assert.IsNotNull(statusKind, "Should have a private StatusKind enum");
+            var kinds = Enum.GetNames(statusKind);
+            Assert.Contains("Valid", kinds);
+            Assert.Contains("Invalid", kinds);
+            Assert.Contains("Neutral", kinds);
         }
 
         /// <summary>
-        /// Current behavior: MCPSetupWindow uses simple direct callback registration
-        /// (button.clicked += method) without RegisterValueChangedCallback.
+        /// Current behavior: MCPSetupWindow handles buttons directly inside OnGUI/Draw* methods —
+        /// there is no CreateGUI callback registration step anymore.
         /// </summary>
         [Test]
-        public void MCPSetupWindow_UsesDirectCallbackRegistration_ForButtons()
+        public void MCPSetupWindow_HandlesButtonsDirectlyInOnGUI_WithoutCallbackRegistration()
         {
             var type = typeof(MCPSetupWindow);
-            var createGuiMethod = type.GetMethod("CreateGUI", BindingFlags.Public | BindingFlags.Instance);
+            Assert.IsNotNull(type.GetMethod("OnGUI", BindingFlags.NonPublic | BindingFlags.Instance),
+                "the window should render through OnGUI");
+            Assert.IsNull(type.GetMethod("CreateGUI", BindingFlags.Public | BindingFlags.Instance),
+                "the UITK CreateGUI hook should be gone");
 
-            Assert.IsNotNull(createGuiMethod, "Should have CreateGUI method");
-
-            var pattern = new[]
+            foreach (string handler in new[]
+                     {
+                         "OnRefreshClicked", "OnDoneClicked",
+                         "OnOpenPythonInstallClicked", "OnOpenUvInstallClicked", "OnInstallUvClicked"
+                     })
             {
-                "refreshButton.clicked += OnRefreshClicked",
-                "doneButton.clicked += OnDoneClicked",
-                "openPythonLinkButton.clicked += OnOpenPythonInstallClicked",
-                "openUvLinkButton.clicked += OnOpenUvInstallClicked"
-            };
+                Assert.IsNotNull(type.GetMethod(handler, BindingFlags.NonPublic | BindingFlags.Instance),
+                    $"button handlers should be plain methods: {handler}");
+            }
 
-            Assert.Pass($"Direct callback pattern: {string.Join("; ", pattern)}");
+            foreach (string draw in new[] { "DrawDependenciesStep", "DrawClientsStep", "DrawDependencyRow" })
+            {
+                Assert.IsNotNull(type.GetMethod(draw, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static),
+                    $"step drawing should be a Draw method: {draw}");
+            }
         }
 
         #endregion
@@ -181,41 +192,40 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         #region Section 3: McpConnectionSection Tests (6 tests)
 
         /// <summary>
-        /// Current behavior: McpConnectionSection caches 13+ UI elements in CacheUIElements method.
-        /// This is the three-phase pattern Phase 1.
+        /// Current behavior: McpConnectionSection keeps 20+ plain state fields (strings, bools,
+        /// ints) that Draw() renders every frame — no cached UI elements.
         /// </summary>
         [Test]
-        public void McpConnectionSection_CachesLargeNumberOfUIElements_InCacheMethod()
+        public void McpConnectionSection_KeepsControlStateInPlainFields()
         {
             var type = typeof(McpConnectionSection);
-            var cacheMethod = type.GetMethod("CacheUIElements", BindingFlags.NonPublic | BindingFlags.Instance);
-
-            Assert.IsNotNull(cacheMethod, "Should have CacheUIElements method");
+            Assert.IsNotNull(type.GetMethod("Draw", BindingFlags.Public | BindingFlags.Instance),
+                "the section should render through Draw()");
 
             var fields = type.GetFields(BindingFlags.NonPublic | BindingFlags.Instance);
-            var uiFields = fields.Where(f =>
-                typeof(VisualElement).IsAssignableFrom(f.FieldType) ||
-                typeof(Button).IsAssignableFrom(f.FieldType) ||
-                typeof(TextField).IsAssignableFrom(f.FieldType)
-            ).ToArray();
+            var stateFields = fields.Where(f =>
+                f.FieldType == typeof(string) || f.FieldType == typeof(bool) || f.FieldType == typeof(int)).ToArray();
 
-            Assert.GreaterOrEqual(uiFields.Length, 10, "Should have 10+ UI element fields");
+            Assert.GreaterOrEqual(stateFields.Length, 10, "Should have 10+ plain state fields");
 
-            var examples = new[]
+            foreach (string fieldName in new[]
+                     {
+                         "httpUrlField", "apiKeyField", "unityPortField",
+                         "connectionStatusLabelText", "connectionToggleButtonText",
+                         "startHttpServerButtonText", "transportMismatchText"
+                     })
             {
-                "transportDropdown", "httpUrlField", "unityPortField",
-                "statusIndicator", "connectionStatusLabel", "connectionToggleButton"
-            };
-
-            Assert.Pass($"McpConnectionSection caches {uiFields.Length} UI elements. Examples: {string.Join(", ", examples)}");
+                Assert.IsNotNull(type.GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance),
+                    $"Should have a {fieldName} field");
+            }
         }
 
         /// <summary>
-        /// Current behavior: McpConnectionSection reads 3+ EditorPrefs in InitializeUI
+        /// Current behavior: McpConnectionSection reads 3+ prefs in InitializeState
         /// (UseHttpTransport, HttpTransportScope, UnitySocketPort).
         /// </summary>
         [Test]
-        public void McpConnectionSection_ReadsMultipleEditorPrefs_InInitializeUI()
+        public void McpConnectionSection_ReadsMultipleEditorPrefs_InInitializeState()
         {
             var prefKeys = new[]
             {
@@ -229,20 +239,24 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
                 Assert.IsNotEmpty(key, $"EditorPrefKey should not be empty: {key}");
             }
 
-            Assert.Pass($"McpConnectionSection reads EditorPrefs: {string.Join(", ", prefKeys)}");
+            var type = typeof(McpConnectionSection);
+            Assert.IsNotNull(type.GetMethod("InitializeState", BindingFlags.NonPublic | BindingFlags.Instance),
+                "prefs should be read once in InitializeState (called from the constructor)");
         }
 
         /// <summary>
-        /// Current behavior: McpConnectionSection uses EnumField.RegisterValueChangedCallback
-        /// for the transport dropdown with complex multi-step handler.
+        /// Current behavior: McpConnectionSection routes transport changes through the
+        /// OnTransportSelectionChanged(previous, selected) handler with a multi-step flow.
         /// </summary>
         [Test]
-        public void McpConnectionSection_UsesEnumFieldValueChangedCallback_ForTransport()
+        public void McpConnectionSection_HandlesTransportChange_InOnTransportSelectionChanged()
         {
             var type = typeof(McpConnectionSection);
-            var registerMethod = type.GetMethod("RegisterCallbacks", BindingFlags.NonPublic | BindingFlags.Instance);
+            var handler = type.GetMethod("OnTransportSelectionChanged", BindingFlags.NonPublic | BindingFlags.Instance);
 
-            Assert.IsNotNull(registerMethod, "Should have RegisterCallbacks method");
+            Assert.IsNotNull(handler, "Should have OnTransportSelectionChanged");
+            Assert.AreEqual(2, handler.GetParameters().Length,
+                "the handler takes (previous, selected) transports");
 
             var callbackSteps = new[]
             {
@@ -250,52 +264,49 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
                 "2. Persist UseHttpTransport to EditorPrefs",
                 "3. Persist HttpTransportScope if HTTP",
                 "4. Clear resume flags (ResumeStdioAfterReload in EditorPrefs, HTTP resume key in SessionState)",
-                "5. Update UI visibility",
+                "5. Update UI visibility flags",
                 "6. Invoke OnManualConfigUpdateRequested event",
                 "7. Invoke OnTransportChanged event",
                 "8. Stop opposing transport if switching HTTP<->Stdio"
             };
 
-            Assert.Pass($"Transport callback flow: {string.Join("; ", callbackSteps)}");
+            Assert.Greater(callbackSteps.Length, 0); // flow documented above
         }
 
         /// <summary>
-        /// Current behavior: McpConnectionSection uses FocusOutEvent to persist HTTP URL
-        /// (not every keystroke, only on focus loss).
+        /// Current behavior: McpConnectionSection persists the HTTP URL only when its field loses
+        /// keyboard focus (httpUrlWasFocused flag), not on every keystroke.
         /// </summary>
         [Test]
-        public void McpConnectionSection_UsesFocusOutEvent_ToPersistHttpUrl()
+        public void McpConnectionSection_PersistsHttpUrl_OnFocusLoss()
         {
             var type = typeof(McpConnectionSection);
-            var persistMethod = type.GetMethod("PersistHttpUrlFromField", BindingFlags.NonPublic | BindingFlags.Instance);
-
-            Assert.IsNotNull(persistMethod, "Should have PersistHttpUrlFromField method");
-
-            var pattern = new[]
-            {
-                "httpUrlField.RegisterCallback<FocusOutEvent>(_ => PersistHttpUrlFromField())",
-                "Avoids fighting user during typing",
-                "Normalizes URL on commit"
-            };
-
-            Assert.Pass($"FocusOut pattern: {string.Join("; ", pattern)}");
+            Assert.IsNotNull(type.GetMethod("PersistHttpUrlFromField", BindingFlags.NonPublic | BindingFlags.Instance),
+                "Should have PersistHttpUrlFromField");
+            Assert.IsNotNull(type.GetField("httpUrlWasFocused", BindingFlags.NonPublic | BindingFlags.Instance),
+                "focus-loss commits are tracked with the httpUrlWasFocused flag");
         }
 
         /// <summary>
-        /// Current behavior: McpConnectionSection uses KeyDownEvent with KeyCode.Return check
-        /// to persist values on Enter key press.
+        /// Current behavior: McpConnectionSection debounce thresholds (orphaned sessions, health
+        /// reporting) are pure internal static functions, testable without a GUI context.
         /// </summary>
         [Test]
-        public void McpConnectionSection_UsesKeyDownEvent_WithReturnKeyCheck()
+        public void McpConnectionSection_DebounceThresholds_AreInternalPureFunctions()
         {
-            var pattern = new[]
-            {
-                "field.RegisterCallback<KeyDownEvent>(evt => {...})",
-                "if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter)",
-                "PersistValue(); evt.StopPropagation();"
-            };
+            Assert.AreEqual(3, McpConnectionSection.OrphanedSessionDownPollThreshold,
+                "an active session needs repeated missed polls before being torn down as orphaned");
+            Assert.AreEqual(2, McpConnectionSection.UnhealthyVerificationThreshold,
+                "health flips to Unhealthy only after repeated failed verifications");
 
-            Assert.Pass($"KeyDown pattern: {string.Join("; ", pattern)}");
+            Assert.IsTrue(McpConnectionSection.ShouldEndOrphanedSession(true, true, false, false, 3));
+            Assert.IsFalse(McpConnectionSection.ShouldEndOrphanedSession(true, true, false, false, 2));
+            Assert.IsFalse(McpConnectionSection.ShouldEndOrphanedSession(false, true, false, false, 10));
+            Assert.IsFalse(McpConnectionSection.ShouldEndOrphanedSession(true, true, true, false, 10),
+                "a toggle in flight must never end the session");
+
+            Assert.IsTrue(McpConnectionSection.ShouldReportUnhealthy(2));
+            Assert.IsFalse(McpConnectionSection.ShouldReportUnhealthy(1));
         }
 
         /// <summary>
@@ -311,8 +322,6 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
             var eventNames = events.Select(e => e.Name).ToArray();
             Assert.Contains("OnManualConfigUpdateRequested", eventNames);
             Assert.Contains("OnTransportChanged", eventNames);
-
-            Assert.Pass($"McpConnectionSection events: {string.Join(", ", eventNames)}");
         }
 
         #endregion
@@ -320,31 +329,26 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         #region Section 4: McpAdvancedSection Tests (4 tests)
 
         /// <summary>
-        /// Current behavior: McpAdvancedSection (if it exists) caches 20+ UI elements
-        /// for paths, toggles, buttons, status, and labels.
+        /// Current behavior: McpAdvancedSection keeps its control state (paths, toggles, status)
+        /// in plain fields rendered by Draw().
         /// </summary>
         [Test]
-        public void McpAdvancedSection_CachesLargeUIElementSet_IfExists()
+        public void McpAdvancedSection_KeepsControlStateInPlainFields()
         {
-            // Try to find McpAdvancedSection type
-            var type = typeof(MCPSetupWindow).Assembly.GetTypes()
-                .FirstOrDefault(t => t.Name == "McpAdvancedSection");
+            var type = typeof(McpAdvancedSection);
+            Assert.IsNotNull(type.GetMethod("Draw", BindingFlags.Public | BindingFlags.Instance),
+                "the section should render through Draw()");
 
-            if (type == null)
+            foreach (string fieldName in new[]
+                     {
+                         "uvxPathDisplay", "gitUrl", "debugLogs", "autoStartOnLoad", "devModeForceRefresh",
+                         "screenshotsFolder", "deploySourcePath", "deployTargetText", "deployBackupText",
+                         "deployStatusText", "healthStatusText"
+                     })
             {
-                Assert.Inconclusive("McpAdvancedSection type not found - may be in different namespace or refactored");
-                return;
+                Assert.IsNotNull(type.GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance),
+                    $"Should have a {fieldName} field");
             }
-
-            var fields = type.GetFields(BindingFlags.NonPublic | BindingFlags.Instance);
-            var uiFields = fields.Where(f =>
-                typeof(VisualElement).IsAssignableFrom(f.FieldType) ||
-                typeof(Button).IsAssignableFrom(f.FieldType) ||
-                typeof(TextField).IsAssignableFrom(f.FieldType) ||
-                typeof(Toggle).IsAssignableFrom(f.FieldType)
-            ).ToArray();
-
-            Assert.Pass($"McpAdvancedSection caches {uiFields.Length} UI elements");
         }
 
         /// <summary>
@@ -368,42 +372,43 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
             {
                 Assert.IsNotEmpty(key, $"EditorPrefKey should not be empty");
             }
-
-            Assert.Pass($"Advanced section uses {expectedPrefKeys.Length} EditorPrefs keys");
         }
 
         /// <summary>
-        /// Current behavior: Advanced section uses Toggle.RegisterValueChangedCallback
-        /// to persist boolean preferences.
+        /// Current behavior: Advanced section keeps one bool field per toggle-backed preference;
+        /// the IMGUI toggle in Draw() writes the pref on change (no RegisterValueChangedCallback).
         /// </summary>
         [Test]
-        public void McpAdvancedSection_UsesToggleValueChangedCallback_ToPersistBools()
+        public void McpAdvancedSection_KeepsBoolFields_ForToggleBackedPrefs()
         {
-            var pattern = new[]
+            var type = typeof(McpAdvancedSection);
+            foreach (string fieldName in new[]
+                     {
+                         "debugLogs", "logRecord", "autoStartOnLoad", "devModeForceRefresh",
+                         "allowLanHttpBind", "allowInsecureRemoteHttp", "deployRestoreEnabled"
+                     })
             {
-                "toggle.RegisterValueChangedCallback(evt => {...})",
-                "EditorPrefs.SetBool(Key, evt.newValue)",
-                "Optional: invoke domain events or refresh UI"
-            };
-
-            Assert.Pass($"Toggle callback pattern: {string.Join("; ", pattern)}");
+                var field = type.GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+                Assert.IsNotNull(field, $"Should have a {fieldName} field");
+                Assert.AreEqual(typeof(bool), field.FieldType, $"{fieldName} should back a toggle");
+            }
         }
 
         /// <summary>
-        /// Current behavior: Advanced section modifies CSS class lists dynamically
-        /// to show/hide validation feedback and status indicators.
+        /// Current behavior: Advanced section surfaces validation and status through text + error
+        /// flag fields (deploy status, health status) instead of CSS class lists.
         /// </summary>
         [Test]
-        public void McpAdvancedSection_ModifiesClassListDynamically_ForValidation()
+        public void McpAdvancedSection_ReportsStatusThroughTextAndErrorFlagFields()
         {
-            var pattern = new[]
-            {
-                "element.AddToClassList(\"valid\")",
-                "element.RemoveFromClassList(\"invalid\")",
-                "Used for path validation, status indicators, etc."
-            };
-
-            Assert.Pass($"Dynamic class list pattern: {string.Join("; ", pattern)}");
+            var type = typeof(McpAdvancedSection);
+            Assert.IsNotNull(type.GetField("deployStatusText", BindingFlags.NonPublic | BindingFlags.Instance));
+            Assert.IsNotNull(type.GetField("deployStatusIsError", BindingFlags.NonPublic | BindingFlags.Instance));
+            Assert.IsNotNull(type.GetField("healthStatusText", BindingFlags.NonPublic | BindingFlags.Instance));
+            Assert.IsNotNull(type.GetMethod("UpdateHealthStatus", BindingFlags.Public | BindingFlags.Instance),
+                "health status should be pushed in via UpdateHealthStatus");
+            Assert.IsNotNull(type.GetMethod("UpdatePathOverrides", BindingFlags.Public | BindingFlags.Instance),
+                "path overrides should be re-read via UpdatePathOverrides");
         }
 
         #endregion
@@ -411,84 +416,84 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         #region Section 5: McpClientConfigSection Tests (4 tests)
 
         /// <summary>
-        /// Current behavior: Client config section caches 11+ UI elements
-        /// (dropdown, indicators, fields, buttons, foldout).
+        /// Current behavior: Client config section keeps selection/status/config state in plain
+        /// fields (selected client index, status text, config path/json) rendered by Draw().
         /// </summary>
         [Test]
-        public void McpClientConfigSection_CachesDropdownAndIndicators_PlusFields()
+        public void McpClientConfigSection_KeepsSelectionAndStatusInPlainFields()
         {
-            // Try to find McpClientConfigSection type
-            var type = typeof(MCPSetupWindow).Assembly.GetTypes()
-                .FirstOrDefault(t => t.Name == "McpClientConfigSection");
+            var type = typeof(McpClientConfigSection);
+            Assert.IsNotNull(type.GetMethod("Draw", BindingFlags.Public | BindingFlags.Instance),
+                "the section should render through Draw()");
 
-            if (type == null)
+            var indexField = type.GetField("selectedClientIndex", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.IsNotNull(indexField, "Should have a selectedClientIndex field");
+            Assert.AreEqual(typeof(int), indexField.FieldType, "the client dropdown is an int index");
+
+            foreach (string fieldName in new[]
+                     {
+                         "clientStatusText", "configureButtonText", "configPathText", "configJsonText",
+                         "installationStepsText"
+                     })
             {
-                Assert.Inconclusive("McpClientConfigSection type not found");
-                return;
+                Assert.IsNotNull(type.GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance),
+                    $"Should have a {fieldName} field");
             }
-
-            var fields = type.GetFields(BindingFlags.NonPublic | BindingFlags.Instance);
-            var uiFields = fields.Where(f =>
-                typeof(VisualElement).IsAssignableFrom(f.FieldType) ||
-                typeof(Button).IsAssignableFrom(f.FieldType) ||
-                typeof(DropdownField).IsAssignableFrom(f.FieldType) ||
-                typeof(Foldout).IsAssignableFrom(f.FieldType)
-            ).ToArray();
-
-            Assert.Pass($"McpClientConfigSection caches {uiFields.Length} UI elements");
         }
 
         /// <summary>
-        /// Current behavior: Client config section initializes dropdown choices
-        /// from available client configurators.
+        /// Current behavior: Client config selection changes route through
+        /// OnClientSelected(index), with FindConfiguratorIndex to restore a persisted selection.
         /// </summary>
         [Test]
-        public void McpClientConfigSection_InitializesDropdownChoices_FromConfigurators()
+        public void McpClientConfigSection_RoutesSelectionThroughOnClientSelected()
         {
-            var pattern = new[]
-            {
-                "dropdown.choices = configuratorList",
-                "dropdown.index set from current selection",
-                "Choices populated from service/registry"
-            };
-
-            Assert.Pass($"Dropdown initialization: {string.Join("; ", pattern)}");
+            var type = typeof(McpClientConfigSection);
+            var handler = type.GetMethod("OnClientSelected", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.IsNotNull(handler, "Should have OnClientSelected");
+            Assert.AreEqual(1, handler.GetParameters().Length, "OnClientSelected takes the new index");
+            Assert.IsNotNull(type.GetMethod("FindConfiguratorIndex", BindingFlags.NonPublic | BindingFlags.Instance),
+                "persisted selections are restored via FindConfiguratorIndex");
         }
 
         /// <summary>
-        /// Current behavior: Client config section uses DisplayStyle.None/Flex
-        /// for conditional visibility of dependent UI elements.
+        /// Current behavior: Client config conditional rows are plain bool visibility flags
+        /// (no DisplayStyle toggles anymore).
         /// </summary>
         [Test]
-        public void McpClientConfigSection_UsesDisplayStyleToggle_ForConditionalVisibility()
+        public void McpClientConfigSection_UsesBoolVisibilityFlags_ForConditionalRows()
         {
-            var pattern = new[]
+            var type = typeof(McpClientConfigSection);
+            foreach (string fieldName in new[]
+                     {
+                         "installSkillsVisible", "claudeCliPathVisible", "clientProjectDirVisible",
+                         "clientDetailsOpen", "manualConfigOpen"
+                     })
             {
-                "element.style.display = DisplayStyle.None",
-                "element.style.display = DisplayStyle.Flex",
-                "Used for showing/hiding config fields based on dropdown selection"
-            };
-
-            Assert.Pass($"DisplayStyle pattern: {string.Join("; ", pattern)}");
+                var field = type.GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+                Assert.IsNotNull(field, $"Should have a {fieldName} field");
+                Assert.AreEqual(typeof(bool), field.FieldType, $"{fieldName} should be a visibility flag");
+            }
         }
 
         /// <summary>
-        /// Current behavior: Client config dropdown triggers cascading updates
-        /// to dependent fields and indicators when selection changes.
+        /// Current behavior: Client config cascades updates via events and public refresh methods
+        /// (RefreshSelectedClient, UpdateClientStatus, UpdateManualConfiguration).
         /// </summary>
         [Test]
         public void McpClientConfigSection_DropdownTriggersCascadingUpdates_OnChange()
         {
-            var updateFlow = new[]
-            {
-                "1. dropdown.RegisterValueChangedCallback(evt => {...})",
-                "2. Load config for selected client",
-                "3. Update dependent fields (URL, status, etc.)",
-                "4. Show/hide sections based on selection",
-                "5. Invoke update events for other components"
-            };
+            var type = typeof(McpClientConfigSection);
+            var events = type.GetEvents(BindingFlags.Public | BindingFlags.Instance);
+            var eventNames = events.Select(e => e.Name).ToArray();
+            Assert.Contains("OnClientTransportDetected", eventNames);
+            Assert.Contains("OnClientConfigMismatch", eventNames);
 
-            Assert.Pass($"Cascading update flow: {string.Join("; ", updateFlow)}");
+            foreach (string method in new[] { "RefreshSelectedClient", "UpdateClientStatus", "UpdateManualConfiguration" })
+            {
+                Assert.IsNotNull(type.GetMethod(method, BindingFlags.Public | BindingFlags.Instance),
+                    $"selection changes should cascade through {method}");
+            }
         }
 
         #endregion
@@ -496,107 +501,106 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         #region Section 6: Cross-Pattern Tests (5 tests)
 
         /// <summary>
-        /// Current behavior: Three-phase pattern (Cache-Initialize-Register) appears
-        /// in 5+ window/component classes.
+        /// Current behavior: every section controller renders through a public Draw() and keeps
+        /// its control state in plain fields (IMGUI), replacing the old
+        /// Cache-Initialize-Register three-phase UITK pattern.
         /// </summary>
         [Test]
-        public void CrossPattern_ThreePhaseLifecycle_RepeatsAcrossComponents()
+        public void CrossPattern_IMGUIStateInPlainFields_RepeatsAcrossComponents()
         {
-            var componentsWithPattern = new[]
+            var components = new[]
             {
-                "McpConnectionSection (has explicit methods)",
-                "McpAdvancedSection (likely)",
-                "McpClientConfigSection (likely)",
-                "MCPSetupWindow (embedded in CreateGUI)",
-                "McpToolsSection (likely)"
+                typeof(McpConnectionSection),
+                typeof(McpAdvancedSection),
+                typeof(McpClientConfigSection),
+                typeof(McpAssetGenSection),
+                typeof(McpBlenderBridgePanel)
             };
 
-            var phases = new[]
+            foreach (var component in components)
             {
-                "Phase 1: CacheUIElements() - Root.Q<T>() queries",
-                "Phase 2: InitializeUI() - EditorPrefs reads + defaults",
-                "Phase 3: RegisterCallbacks() - Event handler setup"
-            };
-
-            Assert.Pass($"Pattern in {componentsWithPattern.Length} components: {string.Join(" -> ", phases)}");
+                Assert.IsNotNull(component.GetMethod("Draw", BindingFlags.Public | BindingFlags.Instance),
+                    component.Name + " should render through Draw()");
+                var fields = component.GetFields(BindingFlags.NonPublic | BindingFlags.Instance);
+                Assert.GreaterOrEqual(fields.Length, 10,
+                    component.Name + " keeps its control state in plain fields");
+            }
         }
 
         /// <summary>
-        /// Current behavior: EditorPrefs binding has 5 distinct variation patterns
-        /// (Bool, String, Int, Key Deletion, Scope-Aware).
+        /// Current behavior: EditorPrefs binding still spans the same kinds (Bool, String/Path,
+        /// Int, Key Deletion, Scope-Aware), keyed by EditorPrefKeys and typed via
+        /// EditorPrefsWindow.knownPrefTypes.
         /// </summary>
         [Test]
         public void CrossPattern_EditorPrefsBinding_HasFiveVariations()
         {
-            var variations = new[]
+            // 1. Simple Boolean, 2. String URL/Path, 3. Integer Port, 4. Key Deletion,
+            // 5. Scope-Aware (HttpTransportScope).
+            foreach (var key in new[]
+                     {
+                         EditorPrefKeys.DebugLogs,
+                         EditorPrefKeys.GitUrlOverride,
+                         EditorPrefKeys.UnitySocketPort,
+                         EditorPrefKeys.HttpTransportScope,
+                         EditorPrefKeys.EditorWindowActivePanel
+                     })
             {
-                "1. Simple Boolean: GetBool/SetBool with toggle callbacks",
-                "2. String URL/Path: GetString/SetString with FocusOut",
-                "3. Integer Port: GetInt/SetInt with KeyDown validation",
-                "4. Key Deletion: DeleteKey() for clearing overrides",
-                "5. Scope-Aware: Conditional logic based on transport scope"
-            };
+                Assert.IsNotEmpty(key, $"EditorPrefKey should not be empty: {key}");
+            }
 
-            Assert.Pass($"EditorPrefs variations: {string.Join("; ", variations)}");
+            var map = typeof(EditorPrefsWindow).GetField("knownPrefTypes", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.IsNotNull(map, "EditorPrefsWindow should map keys to types via knownPrefTypes");
+            var knownTypes = (System.Collections.IDictionary)map.GetValue(null);
+            Assert.Greater(knownTypes.Count, 20, "most MCP prefs have a known type");
         }
 
         /// <summary>
-        /// Current behavior: Callback registration has 6 distinct patterns
-        /// (EnumField, Toggle, Button, FocusOut, KeyDown, Event Signal).
+        /// Current behavior: handlers are plain methods invoked directly from Draw() (button
+        /// pressed → method call), replacing the old callback-registration patterns.
         /// </summary>
         [Test]
-        public void CrossPattern_CallbackRegistration_HasSixPatterns()
+        public void CrossPattern_HandlersAreInvokedDirectlyFromDraw()
         {
-            var patterns = new[]
-            {
-                "1. EnumField.RegisterValueChangedCallback",
-                "2. Toggle.RegisterValueChangedCallback",
-                "3. Button.clicked += handler",
-                "4. RegisterCallback<FocusOutEvent>",
-                "5. RegisterCallback<KeyDownEvent> with KeyCode check",
-                "6. Event Signal Propagation (Action delegates)"
-            };
-
-            Assert.Pass($"Callback patterns: {string.Join("; ", patterns)}");
+            Assert.IsNotNull(typeof(McpConnectionSection)
+                .GetMethod("OnTransportSelectionChanged", BindingFlags.NonPublic | BindingFlags.Instance));
+            Assert.IsNotNull(typeof(McpAdvancedSection)
+                .GetMethod("OnDeployClicked", BindingFlags.NonPublic | BindingFlags.Instance));
+            Assert.IsNotNull(typeof(McpClientConfigSection)
+                .GetMethod("OnConfigureClicked", BindingFlags.NonPublic | BindingFlags.Instance));
+            Assert.IsNotNull(typeof(McpAssetGenSection)
+                .GetMethod("OnRefreshClicked", BindingFlags.NonPublic | BindingFlags.Instance));
         }
 
         /// <summary>
-        /// Current behavior: UI-to-EditorPrefs synchronization happens on user input
-        /// via callbacks (immediate write-through).
+        /// Current behavior: each controller re-reads prefs into its plain fields through a state
+        /// sync method (SyncFromPrefs / InitializeState / UpdatePathOverrides / UpdateClientStatus).
         /// </summary>
         [Test]
-        public void CrossPattern_UIToEditorPrefsSync_WriteThroughOnInput()
+        public void CrossPattern_PrefsToFieldSync_RunsThroughStateSyncMethods()
         {
-            var syncFlow = new[]
-            {
-                "1. User modifies UI element (toggle, field, dropdown)",
-                "2. Callback fires immediately",
-                "3. EditorPrefs.Set* called in callback",
-                "4. No batching or delayed persistence",
-                "5. Each change writes immediately to EditorPrefs"
-            };
-
-            Assert.Pass($"Write-through sync: {string.Join(" -> ", syncFlow)}");
+            Assert.IsNotNull(typeof(McpAssetGenSection)
+                .GetMethod("SyncFromPrefs", BindingFlags.NonPublic | BindingFlags.Instance));
+            Assert.IsNotNull(typeof(McpBlenderBridgePanel)
+                .GetMethod("SyncFromPrefs", BindingFlags.NonPublic | BindingFlags.Instance));
+            Assert.IsNotNull(typeof(McpConnectionSection)
+                .GetMethod("InitializeState", BindingFlags.NonPublic | BindingFlags.Instance));
+            Assert.IsNotNull(typeof(McpAdvancedSection)
+                .GetMethod("UpdatePathOverrides", BindingFlags.Public | BindingFlags.Instance));
+            Assert.IsNotNull(typeof(McpClientConfigSection)
+                .GetMethod("UpdateClientStatus", BindingFlags.Public | BindingFlags.Instance));
         }
 
         /// <summary>
-        /// Current behavior: EditorPrefs-to-UI synchronization happens during InitializeUI
-        /// (one-time read, no automatic refresh on external pref changes).
+        /// Current behavior: the main window persists the active tab in EditorPrefs and restores
+        /// it after a domain reload (EditorWindowActivePanel).
         /// </summary>
         [Test]
-        public void CrossPattern_EditorPrefsToUISync_OneTimeReadInInitialize()
+        public void CrossPattern_ActivePanel_IsPersistedAcrossDomainReloads()
         {
-            var syncFlow = new[]
-            {
-                "1. CreateGUI/Constructor called",
-                "2. CacheUIElements queries elements",
-                "3. InitializeUI reads EditorPrefs once",
-                "4. SetValueWithoutNotify or .value = ... to populate UI",
-                "5. No automatic refresh if EditorPrefs change externally",
-                "6. Manual refresh requires RefreshUI() call"
-            };
-
-            Assert.Pass($"One-time read sync: {string.Join(" -> ", syncFlow)}");
+            Assert.IsNotEmpty(EditorPrefKeys.EditorWindowActivePanel, "the active-panel key should exist");
+            Assert.IsNotNull(typeof(MCPForUnityEditorWindow).GetMethod("ShowWindow", BindingFlags.Public | BindingFlags.Static),
+                "the main window should open via ShowWindow");
         }
 
         #endregion
@@ -604,43 +608,42 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         #region Section 7: Visibility and Refresh Logic (2 tests)
 
         /// <summary>
-        /// Current behavior: Panel switching uses DisplayStyle.None/Flex
-        /// with EditorPrefs persistence for active panel.
+        /// Current behavior: panel switching is tab drawing inside OnGUI, with the active panel
+        /// persisted to EditorPrefs (EditorWindowActivePanel) so it survives domain reloads.
         /// </summary>
         [Test]
-        public void VisibilityLogic_PanelSwitching_UsesDisplayStyleWithPersistence()
+        public void VisibilityLogic_PanelSwitching_PersistsActivePanelInEditorPrefs()
         {
             var panelKey = EditorPrefKeys.EditorWindowActivePanel;
             Assert.IsNotEmpty(panelKey, "EditorWindowActivePanel key should exist");
 
-            var pattern = new[]
-            {
-                "1. Read EditorPrefs for active panel",
-                "2. Set all panels to DisplayStyle.None",
-                "3. Set selected panel to DisplayStyle.Flex",
-                "4. On user switch: EditorPrefs.SetString(key, newPanel)",
-                "5. Persist survives domain reload"
-            };
-
-            Assert.Pass($"Panel switching: {string.Join("; ", pattern)}");
+            var type = typeof(MCPForUnityEditorWindow);
+            Assert.IsNotNull(type.GetMethod("DrawTabs", BindingFlags.NonPublic | BindingFlags.Instance),
+                "tabs should be drawn by DrawTabs (IMGUI)");
+            Assert.IsNotNull(type.GetMethod("OnGUI", BindingFlags.NonPublic | BindingFlags.Instance),
+                "the window should render through OnGUI");
         }
 
         /// <summary>
-        /// Current behavior: Conditional display logic for HTTP fields
-        /// based on transport selection (show for HTTP, hide for Stdio).
+        /// Current behavior: conditional display of HTTP rows is driven by bool visibility flags
+        /// on the connection section, updated when the transport selection changes.
         /// </summary>
         [Test]
-        public void VisibilityLogic_ConditionalDisplay_BasedOnTransportSelection()
+        public void VisibilityLogic_TransportRows_AreBoolVisibilityFlags()
         {
-            var pattern = new[]
+            var type = typeof(McpConnectionSection);
+            foreach (string fieldName in new[]
+                     {
+                         "showConnectionToggle", "showHttpUrlRow", "showApiKeyRow",
+                         "showHttpServerControlRow", "showUnitySocketPortRow",
+                         "showManualCommandFoldout", "showHttpServerCommandSection",
+                         "transportMismatchVisible", "versionMismatchVisible"
+                     })
             {
-                "if (isHttpSelected) { httpRows.style.display = Flex; }",
-                "else { httpRows.style.display = None; }",
-                "Triggered by transport dropdown value change",
-                "UpdateHttpFieldVisibility() method pattern"
-            };
-
-            Assert.Pass($"Conditional visibility: {string.Join("; ", pattern)}");
+                var field = type.GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+                Assert.IsNotNull(field, $"Should have a {fieldName} field");
+                Assert.AreEqual(typeof(bool), field.FieldType, $"{fieldName} should be a visibility flag");
+            }
         }
 
         #endregion
@@ -654,10 +657,11 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         [Test]
         public void EventSignaling_InterComponentCommunication_UsesActionDelegates()
         {
-            var type = typeof(McpConnectionSection);
-            var events = type.GetEvents(BindingFlags.Public | BindingFlags.Instance);
+            var connectionEvents = typeof(McpConnectionSection).GetEvents(BindingFlags.Public | BindingFlags.Instance);
+            Assert.GreaterOrEqual(connectionEvents.Length, 2, "McpConnectionSection should have at least 2 events");
 
-            Assert.GreaterOrEqual(events.Length, 2, "Should have at least 2 events");
+            var clientEvents = typeof(McpClientConfigSection).GetEvents(BindingFlags.Public | BindingFlags.Instance);
+            Assert.GreaterOrEqual(clientEvents.Length, 2, "McpClientConfigSection should have at least 2 events");
 
             var communicationFlow = new[]
             {
@@ -668,7 +672,9 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
                 "5. Used for: transport changes, config updates, manual refresh requests"
             };
 
-            Assert.Pass($"Event signaling: {string.Join(" -> ", communicationFlow)}");
+            Assert.Contains("OnTransportChanged", connectionEvents.Select(e => e.Name).ToArray());
+            Assert.Contains("OnClientTransportDetected", clientEvents.Select(e => e.Name).ToArray());
+            Assert.Greater(communicationFlow.Length, 0); // flow documented above
         }
 
         #endregion
@@ -676,69 +682,73 @@ namespace MCPForUnityTests.Editor.Windows.Characterization
         #region Section 9: Pattern Summary Tests (Bonus documentation)
 
         /// <summary>
-        /// Summary: Document total pattern repetition metrics across the Windows/UI domain.
+        /// Summary: Document the current IMGUI architecture metrics across the Windows/UI domain.
         /// </summary>
         [Test]
         public void PatternSummary_TotalRepetitionMetrics_AcrossDomain()
         {
             var metrics = new[]
             {
-                "Window Classes: 3 (MCPForUnityEditorWindow, MCPSetupWindow, EditorPrefsWindow)",
-                "Component Classes: 4+ (Connection, Advanced, ClientConfig, Tools)",
-                "CacheUIElements Calls: 5+ (one per component)",
-                "EditorPrefs Bindings: 60+ (scattered across all classes)",
-                "Callback Registrations: 50+ (scattered across all classes)",
-                "UI Element Queries (Q<T>): 100+ (mostly duplicated patterns)",
-                "Three-Phase Pattern Instances: 14+ (all significant classes)",
-                "EditorPrefs Get Calls: 40+ (InitializeUI methods)",
-                "EditorPrefs Set Calls: 45+ (callback handlers)",
-                "Toggle Callbacks: 8+ (separate implementations)",
-                "Button Clicks: 15+ (separate implementations)"
+                "Window Classes: 3 (MCPForUnityEditorWindow, MCPSetupWindow, EditorPrefsWindow) - all OnGUI",
+                "Section Controllers: 5+ (Connection, Advanced, ClientConfig, AssetGen, BlenderBridge) - all Draw()",
+                "Control State: plain private fields, no cached UI element objects",
+                "State Sync: SyncFromPrefs / InitializeState / UpdatePathOverrides / UpdateClientStatus",
+                "Handlers: plain methods invoked directly from Draw()/OnGUI",
+                "Events: Action delegates for inter-component signaling (OnTransportChanged, ...)",
+                "Panel Persistence: EditorPrefs EditorWindowActivePanel"
             };
 
-            Assert.Pass($"Domain-wide metrics:\n{string.Join("\n", metrics)}");
+            // The three windows must all render through OnGUI.
+            foreach (var window in new[] { typeof(MCPForUnityEditorWindow), typeof(MCPSetupWindow), typeof(EditorPrefsWindow) })
+            {
+                Assert.IsNotNull(window.GetMethod("OnGUI", BindingFlags.NonPublic | BindingFlags.Instance),
+                    window.Name + " should render through OnGUI");
+            }
+
+            Assert.Greater(metrics.Length, 0, string.Join("\n", metrics));
         }
 
         #endregion
 
-        #region Section 9: McpAssetGenSection model-selection structure (reflection, no instantiation)
+        #region Section 10: McpAssetGenSection model-selection structure (reflection, no Draw call)
 
         /// <summary>
-        /// The Asset Gen section builds per-provider model dropdowns and shared-key fal rows (audio, 3D).
-        /// We assert the private builders exist and keep the three-phase lifecycle, without instantiating
-        /// the section (its ctor requires the real UXML tree) — matching this suite's reflection style.
+        /// The Asset Gen section builds per-provider model dropdowns and shared-key fal rows (audio, 3D)
+        /// inside Draw(). We assert the private builders exist and the parameterless constructor
+        /// performs the state initialization, without calling Draw (it needs a GUI context).
         /// </summary>
         [Test]
         public void McpAssetGenSection_HasModelDropdownAndSharedFalRowBuilders()
         {
-            var type = typeof(MCPForUnity.Editor.Windows.Components.AssetGen.McpAssetGenSection);
+            var type = typeof(McpAssetGenSection);
 
-            Assert.IsNotNull(type.GetMethod("AddModelDropdown", BindingFlags.NonPublic | BindingFlags.Instance),
+            Assert.IsNotNull(type.GetMethod("DrawModelDropdown", BindingFlags.NonPublic | BindingFlags.Instance),
                 "expected a per-provider model dropdown builder");
-            Assert.IsNotNull(type.GetMethod("AddSharedFalRow", BindingFlags.NonPublic | BindingFlags.Instance),
+            Assert.IsNotNull(type.GetMethod("DrawSharedFalRow", BindingFlags.NonPublic | BindingFlags.Instance),
                 "expected a shared-key fal row builder for audio and 3D");
 
-            // AddProviderRow takes (parent, id, displayName, kind) so each row knows its catalog kind.
-            var addRow = type.GetMethod("AddProviderRow", BindingFlags.NonPublic | BindingFlags.Instance);
-            Assert.IsNotNull(addRow);
-            Assert.AreEqual(4, addRow.GetParameters().Length, "AddProviderRow should take (parent, id, displayName, kind)");
+            // DrawProviderRow takes (id, displayName, kind) so each row knows its catalog kind.
+            var drawRow = type.GetMethod("DrawProviderRow", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.IsNotNull(drawRow);
+            Assert.AreEqual(3, drawRow.GetParameters().Length, "DrawProviderRow should take (id, displayName, kind)");
 
-            foreach (string phase in new[] { "CacheUIElements", "InitializeUI", "RegisterCallbacks" })
-                Assert.IsNotNull(type.GetMethod(phase, BindingFlags.NonPublic | BindingFlags.Instance),
-                    $"three-phase lifecycle method {phase} should remain");
+            Assert.IsNotNull(type.GetConstructor(Type.EmptyTypes),
+                "the parameterless constructor should initialize all state (SyncFromPrefs + catalog refresh)");
         }
 
         [Test]
-        public void McpAssetGenSection_HasRefreshHandler_AndCachedRefreshElements()
+        public void McpAssetGenSection_HasRefreshHandler_AndRefreshStatusFields()
         {
-            var type = typeof(MCPForUnity.Editor.Windows.Components.AssetGen.McpAssetGenSection);
+            var type = typeof(McpAssetGenSection);
 
             Assert.IsNotNull(type.GetMethod("OnRefreshClicked", BindingFlags.NonPublic | BindingFlags.Instance),
                 "expected a Refresh click handler");
-            Assert.IsNotNull(type.GetField("refreshButton", BindingFlags.NonPublic | BindingFlags.Instance),
-                "expected the Refresh button to be cached (three-phase CacheUIElements)");
-            Assert.IsNotNull(type.GetField("refreshStatusLabel", BindingFlags.NonPublic | BindingFlags.Instance),
-                "expected the Refresh status label to be cached");
+            Assert.IsNotNull(type.GetField("refreshStatusText", BindingFlags.NonPublic | BindingFlags.Instance),
+                "expected the Refresh status text field");
+            Assert.IsNotNull(type.GetField("refreshStatusOk", BindingFlags.NonPublic | BindingFlags.Instance),
+                "expected the Refresh status ok flag field");
+            Assert.IsNotNull(type.GetField("catalogChecking", BindingFlags.NonPublic | BindingFlags.Instance),
+                "expected the catalog-check-in-flight flag");
         }
 
         #endregion

@@ -5,69 +5,85 @@ using MCPForUnity.Editor.Constants;
 using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Services;
 using UnityEditor;
-using UnityEngine.UIElements;
 
 namespace MCPForUnity.Editor.Windows.Components.Resources
 {
     /// <summary>
     /// Controller for the Resources section inside the MCP for Unity editor window.
     /// Provides discovery, filtering, and per-resource enablement toggles.
+    /// IMGUI implementation drawn via <see cref="Draw"/> in the main window's OnGUI.
     /// </summary>
     public class McpResourcesSection
     {
-        private readonly Dictionary<string, Toggle> resourceToggleMap = new Dictionary<string, Toggle>();
-        private Label summaryLabel;
-        private Label noteLabel;
-        private Button enableAllButton;
-        private Button disableAllButton;
-        private Button rescanButton;
-        private VisualElement categoryContainer;
+        /// <summary>A resource group rendered as one foldout in Draw().</summary>
+        private class CategoryEntry
+        {
+            public string Title;
+            public string PrefsSuffix;
+            public List<ResourceMetadata> Resources;
+            public bool FoldoutOpen;
+        }
+
         private List<ResourceMetadata> allResources = new List<ResourceMetadata>();
+        private readonly List<CategoryEntry> categories = new List<CategoryEntry>();
+        private readonly List<string> infoMessages = new List<string>();
+        private string summaryText = "Discovering resources...";
+        private bool showNote;
+        private bool hasResources;
 
-        public VisualElement Root { get; }
-
-        public McpResourcesSection(VisualElement root)
+        public McpResourcesSection()
         {
-            Root = root;
-            CacheUIElements();
-            RegisterCallbacks();
         }
 
-        private void CacheUIElements()
+        /// <summary>
+        /// Draws the Resources section. Call from the main window's OnGUI.
+        /// Layout order follows McpResourcesSection.uxml.
+        /// </summary>
+        public void Draw()
         {
-            summaryLabel = Root.Q<Label>("resources-summary");
-            noteLabel = Root.Q<Label>("resources-note");
-            enableAllButton = Root.Q<Button>("enable-all-resources-button");
-            disableAllButton = Root.Q<Button>("disable-all-resources-button");
-            rescanButton = Root.Q<Button>("rescan-resources-button");
-            categoryContainer = Root.Q<VisualElement>("resource-category-container");
-        }
+            EditorGUILayout.LabelField("Resources", EditorStyles.boldLabel);
 
-        private void RegisterCallbacks()
-        {
-            if (enableAllButton != null)
-            {
-                enableAllButton.AddToClassList("tool-action-button");
-                enableAllButton.style.marginRight = 4;
-                enableAllButton.clicked += () => SetAllResourcesState(true);
-            }
+            // Summary
+            EditorGUILayout.HelpBox(summaryText, MessageType.None);
 
-            if (disableAllButton != null)
+            // Action buttons (Enable All / Disable All / Rescan)
+            EditorGUILayout.BeginHorizontal();
+            using (new EditorGUI.DisabledScope(!hasResources))
             {
-                disableAllButton.AddToClassList("tool-action-button");
-                disableAllButton.style.marginRight = 4;
-                disableAllButton.clicked += () => SetAllResourcesState(false);
-            }
-
-            if (rescanButton != null)
-            {
-                rescanButton.AddToClassList("tool-action-button");
-                rescanButton.clicked += () =>
+                if (GUILayout.Button("Enable All", GUILayout.Width(100)))
                 {
-                    McpLog.Info("Rescanning MCP resources from the editor window.");
-                    MCPServiceLocator.ResourceDiscovery.InvalidateCache();
-                    Refresh();
-                };
+                    SetAllResourcesState(true);
+                }
+                if (GUILayout.Button("Disable All", GUILayout.Width(100)))
+                {
+                    SetAllResourcesState(false);
+                }
+            }
+            if (GUILayout.Button("Rescan", GUILayout.Width(100)))
+            {
+                McpLog.Info("Rescanning MCP resources from the editor window.");
+                MCPServiceLocator.ResourceDiscovery.InvalidateCache();
+                Refresh();
+            }
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+
+            // Note shown only when resources exist
+            if (showNote)
+            {
+                EditorGUILayout.HelpBox("Changes apply after reconnecting or re-registering resources.", MessageType.Info);
+            }
+
+            // Info messages (e.g. "No MCP resources found.")
+            foreach (string message in infoMessages)
+            {
+                EditorGUILayout.HelpBox(message, MessageType.None);
+            }
+
+            // Resource categories
+            foreach (CategoryEntry category in categories)
+            {
+                DrawCategory(category);
             }
         }
 
@@ -76,8 +92,8 @@ namespace MCPForUnity.Editor.Windows.Components.Resources
         /// </summary>
         public void Refresh()
         {
-            resourceToggleMap.Clear();
-            categoryContainer?.Clear();
+            categories.Clear();
+            infoMessages.Clear();
 
             var service = MCPServiceLocator.ResourceDiscovery;
             allResources = service.DiscoverAllResources()
@@ -85,18 +101,12 @@ namespace MCPForUnity.Editor.Windows.Components.Resources
                 .ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            bool hasResources = allResources.Count > 0;
-            enableAllButton?.SetEnabled(hasResources);
-            disableAllButton?.SetEnabled(hasResources);
-
-            if (noteLabel != null)
-            {
-                noteLabel.style.display = hasResources ? DisplayStyle.Flex : DisplayStyle.None;
-            }
+            hasResources = allResources.Count > 0;
+            showNote = hasResources;
 
             if (!hasResources)
             {
-                AddInfoLabel("No MCP resources found. Add classes decorated with [McpForUnityResource] to expose resources.");
+                infoMessages.Add("No MCP resources found. Add classes decorated with [McpForUnityResource] to expose resources.");
                 UpdateSummary();
                 return;
             }
@@ -110,7 +120,7 @@ namespace MCPForUnity.Editor.Windows.Components.Resources
             }
             else
             {
-                AddInfoLabel("No custom resources detected in loaded assemblies.");
+                infoMessages.Add("No custom resources detected in loaded assemblies.");
             }
 
             UpdateSummary();
@@ -124,64 +134,55 @@ namespace MCPForUnity.Editor.Windows.Components.Resources
                 return;
             }
 
-            var foldout = new Foldout
+            categories.Add(new CategoryEntry
             {
-                text = $"{title} ({resourceList.Count})",
-                value = EditorPrefs.GetBool(EditorPrefKeys.ResourceFoldoutStatePrefix + prefsSuffix, true)
-            };
-
-            foldout.RegisterValueChangedCallback(evt =>
-            {
-                EditorPrefs.SetBool(EditorPrefKeys.ResourceFoldoutStatePrefix + prefsSuffix, evt.newValue);
+                Title = title,
+                PrefsSuffix = prefsSuffix,
+                Resources = resourceList,
+                FoldoutOpen = EditorPrefs.GetBool(EditorPrefKeys.ResourceFoldoutStatePrefix + prefsSuffix, true)
             });
-
-            foreach (var resource in resourceList)
-            {
-                foldout.Add(CreateResourceRow(resource));
-            }
-
-            categoryContainer?.Add(foldout);
         }
 
-        private VisualElement CreateResourceRow(ResourceMetadata resource)
+        private void DrawCategory(CategoryEntry category)
         {
-            var row = new VisualElement();
-            row.AddToClassList("tool-item");
+            string header = $"{category.Title} ({category.Resources.Count})";
 
-            var header = new VisualElement();
-            header.AddToClassList("tool-item-header");
+            category.FoldoutOpen = EditorGUILayout.Foldout(category.FoldoutOpen, header, true);
 
-            var toggle = new Toggle(resource.Name)
+            if (!category.FoldoutOpen)
             {
-                value = MCPServiceLocator.ResourceDiscovery.IsResourceEnabled(resource.Name)
-            };
-            toggle.AddToClassList("tool-item-toggle");
-            toggle.tooltip = string.IsNullOrWhiteSpace(resource.Description) ? resource.Name : resource.Description;
+                return;
+            }
 
-            toggle.RegisterValueChangedCallback(evt =>
+            EditorGUI.indentLevel++;
+            foreach (ResourceMetadata resource in category.Resources)
             {
-                HandleToggleChange(resource, evt.newValue);
-            });
+                DrawResourceRow(resource);
+            }
+            EditorGUI.indentLevel--;
+        }
 
-            resourceToggleMap[resource.Name] = toggle;
-            header.Add(toggle);
+        private void DrawResourceRow(ResourceMetadata resource)
+        {
+            bool isEnabled = MCPServiceLocator.ResourceDiscovery.IsResourceEnabled(resource.Name);
+            string tooltip = string.IsNullOrWhiteSpace(resource.Description) ? resource.Name : resource.Description;
 
-            var tagsContainer = new VisualElement();
-            tagsContainer.AddToClassList("tool-tags");
+            EditorGUILayout.BeginHorizontal();
+            EditorGUI.BeginChangeCheck();
+            bool newEnabled = GUILayout.Toggle(new GUIContent(resource.Name, tooltip), isEnabled);
+            if (EditorGUI.EndChangeCheck() && newEnabled != isEnabled)
+            {
+                HandleToggleChange(resource, newEnabled);
+            }
 
-            tagsContainer.Add(CreateTag(resource.IsBuiltIn ? "Built-in" : "Custom"));
-
-            header.Add(tagsContainer);
-            row.Add(header);
+            GUILayout.FlexibleSpace();
+            GUILayout.Label(resource.IsBuiltIn ? "Built-in" : "Custom", EditorStyles.miniLabel, GUILayout.ExpandWidth(false));
+            EditorGUILayout.EndHorizontal();
 
             if (!string.IsNullOrWhiteSpace(resource.Description) && !resource.Description.StartsWith("Resource:", StringComparison.Ordinal))
             {
-                var description = new Label(resource.Description);
-                description.AddToClassList("tool-item-description");
-                row.Add(description);
+                EditorGUILayout.LabelField(resource.Description, EditorStyles.miniLabel);
             }
-
-            return row;
         }
 
         private void HandleToggleChange(ResourceMetadata resource, bool enabled, bool updateSummary = true)
@@ -198,19 +199,10 @@ namespace MCPForUnity.Editor.Windows.Components.Resources
         {
             foreach (var resource in allResources)
             {
-                if (!resourceToggleMap.TryGetValue(resource.Name, out var toggle))
+                if (MCPServiceLocator.ResourceDiscovery.IsResourceEnabled(resource.Name) != enabled)
                 {
                     MCPServiceLocator.ResourceDiscovery.SetResourceEnabled(resource.Name, enabled);
-                    continue;
                 }
-
-                if (toggle.value == enabled)
-                {
-                    continue;
-                }
-
-                toggle.SetValueWithoutNotify(enabled);
-                HandleToggleChange(resource, enabled, updateSummary: false);
             }
 
             UpdateSummary();
@@ -218,33 +210,14 @@ namespace MCPForUnity.Editor.Windows.Components.Resources
 
         private void UpdateSummary()
         {
-            if (summaryLabel == null)
-            {
-                return;
-            }
-
             if (allResources.Count == 0)
             {
-                summaryLabel.text = "No MCP resources discovered.";
+                summaryText = "No MCP resources discovered.";
                 return;
             }
 
             int enabledCount = allResources.Count(r => MCPServiceLocator.ResourceDiscovery.IsResourceEnabled(r.Name));
-            summaryLabel.text = $"{enabledCount} of {allResources.Count} resources enabled.";
-        }
-
-        private void AddInfoLabel(string message)
-        {
-            var label = new Label(message);
-            label.AddToClassList("help-text");
-            categoryContainer?.Add(label);
-        }
-
-        private static Label CreateTag(string text)
-        {
-            var tag = new Label(text);
-            tag.AddToClassList("tool-tag");
-            return tag;
+            summaryText = $"{enabledCount} of {allResources.Count} resources enabled.";
         }
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using MCPForUnity.Editor.Constants;
@@ -6,7 +7,6 @@ using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Services;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.UIElements;
 
 namespace MCPForUnity.Editor.Windows.Components.Advanced
 {
@@ -16,34 +16,73 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
     /// </summary>
     public class McpAdvancedSection
     {
-        // UI Elements
-        private TextField uvxPathOverride;
-        private Button browseUvxButton;
-        private Button clearUvxButton;
-        private VisualElement uvxPathStatus;
-        private TextField gitUrlOverride;
-        private Button browseGitUrlButton;
-        private Button clearGitUrlButton;
-        private Toggle autoStartOnLoadToggle;
-        private Toggle debugLogsToggle;
-        private Toggle logRecordToggle;
-        private Toggle devModeForceRefreshToggle;
-        private Toggle allowLanHttpBindToggle;
-        private Toggle allowInsecureRemoteHttpToggle;
-        private TextField screenshotsFolderOverride;
-        private Button browseScreenshotsFolderButton;
-        private Button clearScreenshotsFolderButton;
-        private TextField deploySourcePath;
-        private Button browseDeploySourceButton;
-        private Button clearDeploySourceButton;
-        private Button deployButton;
-        private Button deployRestoreButton;
-        private Label deployTargetLabel;
-        private Label deployBackupLabel;
-        private Label deployStatusLabel;
-        private VisualElement healthIndicator;
-        private Label healthStatus;
-        private Button testConnectionButton;
+        private enum UvxStatusKind
+        {
+            Valid,
+            Invalid,
+            Warning
+        }
+
+        private enum HealthKind
+        {
+            Healthy,
+            Disconnected,
+            Unknown
+        }
+
+        // UI state (IMGUI backing fields)
+        private string uvxPathDisplay = string.Empty;
+        private UvxStatusKind uvxPathStatus = UvxStatusKind.Invalid;
+        private string gitUrl = string.Empty;
+        private bool debugLogs;
+        private bool logRecord;
+        private bool autoStartOnLoad;
+        private bool devModeForceRefresh;
+        private bool allowLanHttpBind;
+        private bool allowInsecureRemoteHttp;
+        private string screenshotsFolder = string.Empty;
+        private string deploySourcePath = string.Empty;
+        private string deployTargetText = string.Empty;
+        private string deployBackupText = string.Empty;
+        private bool deployRestoreEnabled;
+        private string deployStatusText = string.Empty;
+        private bool deployStatusIsError;
+        private string healthStatusText = "Unknown";
+        private HealthKind healthStatusKind = HealthKind.Unknown;
+
+        // Tooltips (previously assigned to the UXML elements in InitializeUI)
+        private const string UvxPathTooltip = "Override path to uvx executable. Leave empty for auto-detection.";
+        private const string GitUrlTooltip = "Override server source for uvx --from. Leave empty to use default PyPI package. Example local dev: /path/to/unity-mcp/Server";
+        private const string DebugLogsTooltip = "Enable verbose debug logging to the Unity Console.";
+        private const string AutoStartTooltip = "Automatically start the local HTTP server and connect the MCP bridge when the Unity Editor opens. Only applies to HTTP transport (stdio always auto-starts).";
+        private const string LogRecordTooltip = "Log every MCP tool execution (tool, action, status, duration) to Assets/UnityMCP/Log/mcp.log.";
+        private const string DevModeForceRefreshTooltip = "When enabled, generated uvx commands add '--no-cache --refresh' before launching (slower startup, but avoids stale cached builds while iterating on the Server).";
+        private const string AllowLanHttpBindTooltip = "Allow HTTP Local to bind on all interfaces (0.0.0.0 / ::). Disabled by default because devices on your LAN may reach MCP tools.";
+        private const string AllowInsecureRemoteHttpTooltip = "Allow HTTP Remote over plaintext http/ws. Disabled by default to require HTTPS/WSS.";
+        private const string TestConnectionTooltip = "Test the connection between Unity and the MCP server.";
+        private const string ScreenshotsFolderTooltip = "Default folder for screenshots from manage_camera / manage_ui. " +
+            "Project-relative (e.g. 'Assets/Screenshots' or 'Captures'). Empty = built-in default (Assets/Screenshots). " +
+            "Per-call 'output_folder' parameters always override this.";
+        private const string BrowseScreenshotsFolderTooltip = "Pick a folder inside the project; the path is stored project-relative.";
+        private const string ClearScreenshotsFolderTooltip = "Clear override and use the built-in default (Assets/Screenshots).";
+        private const string DeploySourcePathTooltip = "Copy a MCPForUnity folder into this project's package location.";
+        private const string BrowseUvxTooltip = "Browse for uvx executable";
+        private const string ClearUvxTooltip = "Clear override and use auto-detection";
+        private const string BrowseGitUrlTooltip = "Select local server source folder";
+        private const string ClearGitUrlTooltip = "Clear override and use default PyPI package";
+        private const string BrowseDeploySourceTooltip = "Select MCPForUnity source folder";
+        private const string ClearDeploySourceTooltip = "Clear deployment source path";
+        private const string DeployButtonTooltip = "Copy MCPForUnity to this project's package location";
+        private const string DeployRestoreButtonTooltip = "Restore the last backup before deployment";
+
+        // Status indicator colors (approximates the USS classes valid/invalid/warning/healthy/disconnected/unknown)
+        private static readonly Color ValidColor = new Color(0.35f, 0.8f, 0.35f);
+        private static readonly Color InvalidColor = new Color(0.9f, 0.25f, 0.25f);
+        private static readonly Color WarningColor = new Color(0.95f, 0.8f, 0.2f);
+        private static readonly Color UnknownColor = new Color(0.6f, 0.6f, 0.6f);
+        private static readonly Color DeployErrorColor = new Color(0.85f, 0.2f, 0.2f);
+
+        private static readonly Dictionary<Color, Texture2D> DotTextureCache = new Dictionary<Color, Texture2D>();
 
         // Events
         public event Action OnGitUrlChanged;
@@ -51,278 +90,219 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
         public event Action OnTestConnectionRequested;
         public event Action OnPackageDeployed;
 
-        public VisualElement Root { get; private set; }
-
-        public McpAdvancedSection(VisualElement root)
+        public McpAdvancedSection()
         {
-            Root = root;
-            CacheUIElements();
-            InitializeUI();
-            RegisterCallbacks();
+            InitializeState();
         }
 
-        private void CacheUIElements()
+        private void InitializeState()
         {
-            uvxPathOverride = Root.Q<TextField>("uv-path-override");
-            browseUvxButton = Root.Q<Button>("browse-uv-button");
-            clearUvxButton = Root.Q<Button>("clear-uv-button");
-            uvxPathStatus = Root.Q<VisualElement>("uv-path-status");
-            gitUrlOverride = Root.Q<TextField>("git-url-override");
-            browseGitUrlButton = Root.Q<Button>("browse-git-url-button");
-            clearGitUrlButton = Root.Q<Button>("clear-git-url-button");
-            autoStartOnLoadToggle = Root.Q<Toggle>("auto-start-on-load-toggle");
-            debugLogsToggle = Root.Q<Toggle>("debug-logs-toggle");
-            logRecordToggle = Root.Q<Toggle>("log-record-toggle");
-            devModeForceRefreshToggle = Root.Q<Toggle>("dev-mode-force-refresh-toggle");
-            allowLanHttpBindToggle = Root.Q<Toggle>("allow-lan-http-bind-toggle");
-            allowInsecureRemoteHttpToggle = Root.Q<Toggle>("allow-insecure-remote-http-toggle");
-            screenshotsFolderOverride = Root.Q<TextField>("screenshots-folder-override");
-            browseScreenshotsFolderButton = Root.Q<Button>("browse-screenshots-folder-button");
-            clearScreenshotsFolderButton = Root.Q<Button>("clear-screenshots-folder-button");
-            deploySourcePath = Root.Q<TextField>("deploy-source-path");
-            browseDeploySourceButton = Root.Q<Button>("browse-deploy-source-button");
-            clearDeploySourceButton = Root.Q<Button>("clear-deploy-source-button");
-            deployButton = Root.Q<Button>("deploy-button");
-            deployRestoreButton = Root.Q<Button>("deploy-restore-button");
-            deployTargetLabel = Root.Q<Label>("deploy-target-label");
-            deployBackupLabel = Root.Q<Label>("deploy-backup-label");
-            deployStatusLabel = Root.Q<Label>("deploy-status-label");
-            healthIndicator = Root.Q<VisualElement>("health-indicator");
-            healthStatus = Root.Q<Label>("health-status");
-            testConnectionButton = Root.Q<Button>("test-connection-button");
-        }
-
-        private void InitializeUI()
-        {
-            // Set tooltips for fields
-            if (uvxPathOverride != null)
-                uvxPathOverride.tooltip = "Override path to uvx executable. Leave empty for auto-detection.";
-            if (gitUrlOverride != null)
-                gitUrlOverride.tooltip = "Override server source for uvx --from. Leave empty to use default PyPI package. Example local dev: /path/to/unity-mcp/Server";
-            if (debugLogsToggle != null)
-            {
-                debugLogsToggle.tooltip = "Enable verbose debug logging to the Unity Console.";
-                var debugLabel = debugLogsToggle?.parent?.Q<Label>();
-                if (debugLabel != null)
-                    debugLabel.tooltip = debugLogsToggle.tooltip;
-            }
-            if (logRecordToggle != null)
-            {
-                logRecordToggle.tooltip = "Log every MCP tool execution (tool, action, status, duration) to Assets/UnityMCP/Log/mcp.log.";
-                var logRecordLabel = logRecordToggle?.parent?.Q<Label>();
-                if (logRecordLabel != null)
-                    logRecordLabel.tooltip = logRecordToggle.tooltip;
-            }
-            if (devModeForceRefreshToggle != null)
-            {
-                devModeForceRefreshToggle.tooltip = "When enabled, generated uvx commands add '--no-cache --refresh' before launching (slower startup, but avoids stale cached builds while iterating on the Server).";
-                var forceRefreshLabel = devModeForceRefreshToggle?.parent?.Q<Label>();
-                if (forceRefreshLabel != null)
-                    forceRefreshLabel.tooltip = devModeForceRefreshToggle.tooltip;
-            }
-            if (allowLanHttpBindToggle != null)
-            {
-                allowLanHttpBindToggle.tooltip = "Allow HTTP Local to bind on all interfaces (0.0.0.0 / ::). Disabled by default because devices on your LAN may reach MCP tools.";
-                var lanBindLabel = allowLanHttpBindToggle?.parent?.Q<Label>();
-                if (lanBindLabel != null)
-                    lanBindLabel.tooltip = allowLanHttpBindToggle.tooltip;
-            }
-            if (allowInsecureRemoteHttpToggle != null)
-            {
-                allowInsecureRemoteHttpToggle.tooltip = "Allow HTTP Remote over plaintext http/ws. Disabled by default to require HTTPS/WSS.";
-                var insecureRemoteLabel = allowInsecureRemoteHttpToggle?.parent?.Q<Label>();
-                if (insecureRemoteLabel != null)
-                    insecureRemoteLabel.tooltip = allowInsecureRemoteHttpToggle.tooltip;
-            }
-            if (testConnectionButton != null)
-                testConnectionButton.tooltip = "Test the connection between Unity and the MCP server.";
-            if (screenshotsFolderOverride != null)
-            {
-                screenshotsFolderOverride.tooltip = "Default folder for screenshots from manage_camera / manage_ui. " +
-                    "Project-relative (e.g. 'Assets/Screenshots' or 'Captures'). Empty = built-in default (Assets/Screenshots). " +
-                    "Per-call 'output_folder' parameters always override this.";
-                screenshotsFolderOverride.SetValueWithoutNotify(ScreenshotPreferences.DefaultFolder);
-            }
-            if (browseScreenshotsFolderButton != null)
-                browseScreenshotsFolderButton.tooltip = "Pick a folder inside the project; the path is stored project-relative.";
-            if (clearScreenshotsFolderButton != null)
-                clearScreenshotsFolderButton.tooltip = "Clear override and use the built-in default (Assets/Screenshots).";
-            if (deploySourcePath != null)
-                deploySourcePath.tooltip = "Copy a MCPForUnity folder into this project's package location.";
-
-            // Set tooltips for buttons
-            if (browseUvxButton != null)
-                browseUvxButton.tooltip = "Browse for uvx executable";
-            if (clearUvxButton != null)
-                clearUvxButton.tooltip = "Clear override and use auto-detection";
-            if (browseGitUrlButton != null)
-                browseGitUrlButton.tooltip = "Select local server source folder";
-            if (clearGitUrlButton != null)
-                clearGitUrlButton.tooltip = "Clear override and use default PyPI package";
-            if (browseDeploySourceButton != null)
-                browseDeploySourceButton.tooltip = "Select MCPForUnity source folder";
-            if (clearDeploySourceButton != null)
-                clearDeploySourceButton.tooltip = "Clear deployment source path";
-            if (deployButton != null)
-                deployButton.tooltip = "Copy MCPForUnity to this project's package location";
-            if (deployRestoreButton != null)
-                deployRestoreButton.tooltip = "Restore the last backup before deployment";
-
-            if (autoStartOnLoadToggle != null)
-            {
-                autoStartOnLoadToggle.tooltip = "Automatically start the local HTTP server and connect the MCP bridge when the Unity Editor opens. Only applies to HTTP transport (stdio always auto-starts).";
-                var autoStartLabel = autoStartOnLoadToggle.parent?.Q<Label>();
-                if (autoStartLabel != null)
-                    autoStartLabel.tooltip = autoStartOnLoadToggle.tooltip;
-                autoStartOnLoadToggle.SetValueWithoutNotify(EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false));
-            }
-
-            gitUrlOverride.value = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
-
             bool debugEnabled = EditorPrefs.GetBool(EditorPrefKeys.DebugLogs, false);
-            debugLogsToggle.value = debugEnabled;
+            debugLogs = debugEnabled;
             McpLog.SetDebugLoggingEnabled(debugEnabled);
 
-            if (logRecordToggle != null)
-                logRecordToggle.value = McpLogRecord.IsEnabled;
+            logRecord = McpLogRecord.IsEnabled;
+            screenshotsFolder = ScreenshotPreferences.DefaultFolder;
 
-            devModeForceRefreshToggle.value = EditorPrefs.GetBool(EditorPrefKeys.DevModeForceServerRefresh, false);
-            if (allowLanHttpBindToggle != null)
-            {
-                allowLanHttpBindToggle.SetValueWithoutNotify(EditorPrefs.GetBool(EditorPrefKeys.AllowLanHttpBind, false));
-            }
-            if (allowInsecureRemoteHttpToggle != null)
-            {
-                allowInsecureRemoteHttpToggle.SetValueWithoutNotify(EditorPrefs.GetBool(EditorPrefKeys.AllowInsecureRemoteHttp, false));
-            }
             UpdatePathOverrides();
-            UpdateDeploymentSection();
         }
 
-        private void RegisterCallbacks()
+        /// <summary>
+        /// Draws the Advanced Settings section (mirrors McpAdvancedSection.uxml layout).
+        /// </summary>
+        public void Draw()
         {
-            browseUvxButton.clicked += OnBrowseUvxClicked;
-            clearUvxButton.clicked += OnClearUvxClicked;
-            browseGitUrlButton.clicked += OnBrowseGitUrlClicked;
+            GUILayout.Label("Advanced Settings", EditorStyles.boldLabel);
 
-            gitUrlOverride.RegisterValueChangedCallback(evt =>
+            // UVX path override row
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Label("UVX Path:", EditorStyles.miniLabel, GUILayout.Width(80f));
+            DrawStatusDot(GetUvxStatusColor());
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+            using (new EditorGUI.DisabledScope(true))
             {
-                string url = evt.newValue?.Trim();
+                EditorGUILayout.TextField(new GUIContent(uvxPathDisplay, UvxPathTooltip), GUILayout.MinWidth(120f));
+            }
+            if (GUILayout.Button(new GUIContent("Browse", BrowseUvxTooltip), EditorStyles.miniButton, GUILayout.Width(60f)))
+            {
+                OnBrowseUvxClicked();
+            }
+            if (GUILayout.Button(new GUIContent("Clear", ClearUvxTooltip), EditorStyles.miniButton, GUILayout.Width(60f)))
+            {
+                OnClearUvxClicked();
+            }
+            EditorGUILayout.EndHorizontal();
+
+            // Server source override row
+            GUILayout.Label("Server Source:", EditorStyles.miniLabel, GUILayout.Height(18f));
+            EditorGUILayout.BeginHorizontal();
+            string newGitUrl = EditorGUILayout.TextField(new GUIContent(gitUrl, GitUrlTooltip), GUILayout.MinWidth(120f));
+            if (newGitUrl != gitUrl)
+            {
+                string url = newGitUrl != null ? newGitUrl.Trim() : string.Empty;
                 if (string.IsNullOrEmpty(url))
                 {
                     EditorPrefs.DeleteKey(EditorPrefKeys.GitUrlOverride);
+                    gitUrl = url;
                 }
                 else
                 {
                     url = ResolveServerPath(url);
-                    // Update the text field if the path was auto-corrected, without re-triggering the callback
-                    if (url != evt.newValue?.Trim())
-                    {
-                        gitUrlOverride.SetValueWithoutNotify(url);
-                    }
+                    gitUrl = url;
                     EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, url);
                 }
                 OnGitUrlChanged?.Invoke();
                 OnHttpServerCommandUpdateRequested?.Invoke();
-            });
-
-            clearGitUrlButton.clicked += () =>
+            }
+            if (GUILayout.Button(new GUIContent("Select", BrowseGitUrlTooltip), EditorStyles.miniButton, GUILayout.Width(60f)))
             {
-                gitUrlOverride.value = string.Empty;
-                EditorPrefs.DeleteKey(EditorPrefKeys.GitUrlOverride);
-                OnGitUrlChanged?.Invoke();
+                OnBrowseGitUrlClicked();
+            }
+            if (GUILayout.Button(new GUIContent("Clear", ClearGitUrlTooltip), EditorStyles.miniButton, GUILayout.Width(60f)))
+            {
+                OnClearGitUrlClicked();
+            }
+            EditorGUILayout.EndHorizontal();
+
+            // Toggle rows
+            bool newDebugLogs = EditorGUILayout.Toggle(new GUIContent("Debug Logging:", DebugLogsTooltip), debugLogs);
+            if (newDebugLogs != debugLogs)
+            {
+                debugLogs = newDebugLogs;
+                McpLog.SetDebugLoggingEnabled(newDebugLogs);
+            }
+
+            bool newLogRecord = EditorGUILayout.Toggle(new GUIContent("Log Record (Assets/mcp.log):", LogRecordTooltip), logRecord);
+            if (newLogRecord != logRecord)
+            {
+                logRecord = newLogRecord;
+                McpLogRecord.IsEnabled = newLogRecord;
+            }
+
+            // Server health row
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Label("Server Health:", EditorStyles.miniLabel, GUILayout.Width(120f));
+            DrawStatusDot(GetHealthColor());
+            GUILayout.Label(healthStatusText, EditorStyles.miniLabel);
+            if (GUILayout.Button(new GUIContent("Test", TestConnectionTooltip), EditorStyles.miniButton, GUILayout.Width(50f)))
+            {
+                OnTestConnectionRequested?.Invoke();
+            }
+            EditorGUILayout.EndHorizontal();
+
+            bool newAutoStart = EditorGUILayout.Toggle(new GUIContent("Auto-Start Server on Editor Load:", AutoStartTooltip), autoStartOnLoad);
+            if (newAutoStart != autoStartOnLoad)
+            {
+                autoStartOnLoad = newAutoStart;
+                EditorPrefs.SetBool(EditorPrefKeys.AutoStartOnLoad, newAutoStart);
+            }
+
+            bool newForceRefresh = EditorGUILayout.Toggle(new GUIContent("Force Fresh Install:", DevModeForceRefreshTooltip), devModeForceRefresh);
+            if (newForceRefresh != devModeForceRefresh)
+            {
+                devModeForceRefresh = newForceRefresh;
+                EditorPrefs.SetBool(EditorPrefKeys.DevModeForceServerRefresh, newForceRefresh);
                 OnHttpServerCommandUpdateRequested?.Invoke();
-            };
-
-            debugLogsToggle.RegisterValueChangedCallback(evt =>
-            {
-                McpLog.SetDebugLoggingEnabled(evt.newValue);
-            });
-
-            if (logRecordToggle != null)
-            {
-                logRecordToggle.RegisterValueChangedCallback(evt =>
-                {
-                    McpLogRecord.IsEnabled = evt.newValue;
-                });
             }
 
-            if (autoStartOnLoadToggle != null)
+            bool newLanBind = EditorGUILayout.Toggle(new GUIContent("Allow LAN Bind (HTTP Local):", AllowLanHttpBindTooltip), allowLanHttpBind);
+            if (newLanBind != allowLanHttpBind)
             {
-                autoStartOnLoadToggle.RegisterValueChangedCallback(evt =>
-                {
-                    EditorPrefs.SetBool(EditorPrefKeys.AutoStartOnLoad, evt.newValue);
-                });
-            }
-
-            devModeForceRefreshToggle.RegisterValueChangedCallback(evt =>
-            {
-                EditorPrefs.SetBool(EditorPrefKeys.DevModeForceServerRefresh, evt.newValue);
+                allowLanHttpBind = newLanBind;
+                EditorPrefs.SetBool(EditorPrefKeys.AllowLanHttpBind, newLanBind);
                 OnHttpServerCommandUpdateRequested?.Invoke();
-            });
-
-            if (allowLanHttpBindToggle != null)
-            {
-                allowLanHttpBindToggle.RegisterValueChangedCallback(evt =>
-                {
-                    EditorPrefs.SetBool(EditorPrefKeys.AllowLanHttpBind, evt.newValue);
-                    OnHttpServerCommandUpdateRequested?.Invoke();
-                });
             }
 
-            if (allowInsecureRemoteHttpToggle != null)
+            bool newInsecureRemote = EditorGUILayout.Toggle(new GUIContent("Allow Insecure Remote HTTP:", AllowInsecureRemoteHttpTooltip), allowInsecureRemoteHttp);
+            if (newInsecureRemote != allowInsecureRemoteHttp)
             {
-                allowInsecureRemoteHttpToggle.RegisterValueChangedCallback(evt =>
-                {
-                    EditorPrefs.SetBool(EditorPrefKeys.AllowInsecureRemoteHttp, evt.newValue);
-                    OnHttpServerCommandUpdateRequested?.Invoke();
-                });
+                allowInsecureRemoteHttp = newInsecureRemote;
+                EditorPrefs.SetBool(EditorPrefKeys.AllowInsecureRemoteHttp, newInsecureRemote);
+                OnHttpServerCommandUpdateRequested?.Invoke();
             }
 
-            deploySourcePath.RegisterValueChangedCallback(evt =>
+            // Screenshots folder override row
+            GUILayout.Label("Screenshots Folder:", EditorStyles.miniLabel, GUILayout.Height(18f));
+            EditorGUILayout.BeginHorizontal();
+            string newScreenshotsFolder = EditorGUILayout.TextField(new GUIContent(screenshotsFolder, ScreenshotsFolderTooltip), GUILayout.MinWidth(120f));
+            if (newScreenshotsFolder != screenshotsFolder)
             {
-                string path = evt.newValue?.Trim();
-                if (string.IsNullOrEmpty(path) || path == "Not set")
+                screenshotsFolder = newScreenshotsFolder;
+                ScreenshotPreferences.DefaultFolder = newScreenshotsFolder;
+            }
+            if (GUILayout.Button(new GUIContent("Select", BrowseScreenshotsFolderTooltip), EditorStyles.miniButton, GUILayout.Width(60f)))
+            {
+                OnBrowseScreenshotsFolderClicked();
+            }
+            if (GUILayout.Button(new GUIContent("Clear", ClearScreenshotsFolderTooltip), EditorStyles.miniButton, GUILayout.Width(60f)))
+            {
+                OnClearScreenshotsFolderClicked();
+            }
+            EditorGUILayout.EndHorizontal();
+
+            // Deployment source row
+            GUILayout.Label("Package Source:", EditorStyles.miniLabel, GUILayout.Height(18f));
+            EditorGUILayout.BeginHorizontal();
+            string newDeploySource = EditorGUILayout.TextField(new GUIContent(deploySourcePath, DeploySourcePathTooltip), GUILayout.MinWidth(120f));
+            if (newDeploySource != deploySourcePath)
+            {
+                deploySourcePath = newDeploySource;
+                string path = newDeploySource != null ? newDeploySource.Trim() : null;
+                bool shouldApply = !string.IsNullOrEmpty(path) && path != "Not set";
+                if (shouldApply)
                 {
-                    return;
+                    try
+                    {
+                        MCPServiceLocator.Deployment.SetStoredSourcePath(path);
+                    }
+                    catch (Exception ex)
+                    {
+                        EditorUtility.DisplayDialog("Invalid Source", ex.Message, "OK");
+                        UpdateDeploymentSection();
+                    }
                 }
+            }
+            if (GUILayout.Button(new GUIContent("Select", BrowseDeploySourceTooltip), EditorStyles.miniButton, GUILayout.Width(60f)))
+            {
+                OnBrowseDeploySourceClicked();
+            }
+            if (GUILayout.Button(new GUIContent("Clear", ClearDeploySourceTooltip), EditorStyles.miniButton, GUILayout.Width(60f)))
+            {
+                OnClearDeploySourceClicked();
+            }
+            EditorGUILayout.EndHorizontal();
 
-                try
+            GUILayout.Label(deployTargetText, EditorStyles.miniLabel);
+            GUILayout.Label(deployBackupText, EditorStyles.miniLabel);
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(new GUIContent("Deploy", DeployButtonTooltip), EditorStyles.miniButton, GUILayout.Width(80f)))
+            {
+                OnDeployClicked();
+            }
+            using (new EditorGUI.DisabledScope(!deployRestoreEnabled))
+            {
+                if (GUILayout.Button(new GUIContent("Restore", DeployRestoreButtonTooltip), EditorStyles.miniButton, GUILayout.Width(80f)))
                 {
-                    MCPServiceLocator.Deployment.SetStoredSourcePath(path);
+                    OnRestoreBackupClicked();
                 }
-                catch (Exception ex)
-                {
-                    EditorUtility.DisplayDialog("Invalid Source", ex.Message, "OK");
-                    UpdateDeploymentSection();
-                }
-            });
+            }
+            EditorGUILayout.EndHorizontal();
 
-            if (screenshotsFolderOverride != null)
+            if (deployStatusIsError)
             {
-                screenshotsFolderOverride.RegisterValueChangedCallback(evt =>
-                {
-                    ScreenshotPreferences.DefaultFolder = evt.newValue;
-                });
+                Color previousColor = GUI.color;
+                GUI.color = DeployErrorColor;
+                GUILayout.Label(deployStatusText, EditorStyles.miniLabel);
+                GUI.color = previousColor;
             }
-            if (browseScreenshotsFolderButton != null)
+            else
             {
-                browseScreenshotsFolderButton.clicked += OnBrowseScreenshotsFolderClicked;
+                GUILayout.Label(deployStatusText, EditorStyles.miniLabel);
             }
-            if (clearScreenshotsFolderButton != null)
-            {
-                clearScreenshotsFolderButton.clicked += () =>
-                {
-                    ScreenshotPreferences.DefaultFolder = string.Empty;
-                    screenshotsFolderOverride?.SetValueWithoutNotify(string.Empty);
-                };
-            }
-
-            browseDeploySourceButton.clicked += OnBrowseDeploySourceClicked;
-            clearDeploySourceButton.clicked += OnClearDeploySourceClicked;
-            deployButton.clicked += OnDeployClicked;
-            deployRestoreButton.clicked += OnRestoreBackupClicked;
-            testConnectionButton.clicked += () => OnTestConnectionRequested?.Invoke();
         }
 
         public void UpdatePathOverrides()
@@ -340,35 +320,31 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
                 {
                     // Override path invalid, using system fallback
                     string overridePath = EditorPrefs.GetString(EditorPrefKeys.UvxPathOverride, string.Empty);
-                    uvxPathOverride.value = $"Invalid override path: {overridePath} (fallback to uvx path) {uvxPath}";
+                    uvxPathDisplay = $"Invalid override path: {overridePath} (fallback to uvx path) {uvxPath}";
                 }
                 else if (!string.IsNullOrEmpty(uvxPath))
                 {
                     // Override path valid
-                    uvxPathOverride.value = uvxPath;
+                    uvxPathDisplay = uvxPath;
                 }
                 else
                 {
                     // Override set but invalid, no fallback available
                     string overridePath = EditorPrefs.GetString(EditorPrefKeys.UvxPathOverride, string.Empty);
-                    uvxPathOverride.value = $"Invalid override path: {overridePath}, no uv found";
+                    uvxPathDisplay = $"Invalid override path: {overridePath}, no uv found";
                 }
             }
             else
             {
-                uvxPathOverride.value = "uvx (uses PATH)";
+                uvxPathDisplay = "uvx (uses PATH)";
             }
-
-            uvxPathStatus.RemoveFromClassList("valid");
-            uvxPathStatus.RemoveFromClassList("invalid");
-            uvxPathStatus.RemoveFromClassList("warning");
 
             if (hasOverride)
             {
                 if (hasFallback)
                 {
                     // Using fallback - show as warning (yellow)
-                    uvxPathStatus.AddToClassList("warning");
+                    uvxPathStatus = UvxStatusKind.Warning;
                 }
                 else
                 {
@@ -376,11 +352,11 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
                     string overridePath = EditorPrefs.GetString(EditorPrefKeys.UvxPathOverride, string.Empty);
                     if (pathService.TryValidateUvxExecutable(overridePath, out _))
                     {
-                        uvxPathStatus.AddToClassList("valid");
+                        uvxPathStatus = UvxStatusKind.Valid;
                     }
                     else
                     {
-                        uvxPathStatus.AddToClassList("invalid");
+                        uvxPathStatus = UvxStatusKind.Invalid;
                     }
                 }
             }
@@ -390,29 +366,21 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
                 string systemUvxPath = pathService.GetUvxPath();
                 if (!string.IsNullOrEmpty(systemUvxPath) && pathService.TryValidateUvxExecutable(systemUvxPath, out _))
                 {
-                    uvxPathStatus.AddToClassList("valid");
+                    uvxPathStatus = UvxStatusKind.Valid;
                 }
                 else
                 {
-                    uvxPathStatus.AddToClassList("invalid");
+                    uvxPathStatus = UvxStatusKind.Invalid;
                 }
             }
 
-            gitUrlOverride.value = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
-            if (autoStartOnLoadToggle != null)
-                autoStartOnLoadToggle.value = EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false);
-            debugLogsToggle.value = EditorPrefs.GetBool(EditorPrefKeys.DebugLogs, false);
-            if (logRecordToggle != null)
-                logRecordToggle.value = McpLogRecord.IsEnabled;
-            devModeForceRefreshToggle.value = EditorPrefs.GetBool(EditorPrefKeys.DevModeForceServerRefresh, false);
-            if (allowLanHttpBindToggle != null)
-            {
-                allowLanHttpBindToggle.value = EditorPrefs.GetBool(EditorPrefKeys.AllowLanHttpBind, false);
-            }
-            if (allowInsecureRemoteHttpToggle != null)
-            {
-                allowInsecureRemoteHttpToggle.value = EditorPrefs.GetBool(EditorPrefKeys.AllowInsecureRemoteHttp, false);
-            }
+            gitUrl = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
+            autoStartOnLoad = EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false);
+            debugLogs = EditorPrefs.GetBool(EditorPrefKeys.DebugLogs, false);
+            logRecord = McpLogRecord.IsEnabled;
+            devModeForceRefresh = EditorPrefs.GetBool(EditorPrefKeys.DevModeForceServerRefresh, false);
+            allowLanHttpBind = EditorPrefs.GetBool(EditorPrefKeys.AllowLanHttpBind, false);
+            allowInsecureRemoteHttp = EditorPrefs.GetBool(EditorPrefKeys.AllowInsecureRemoteHttp, false);
             UpdateDeploymentSection();
         }
 
@@ -450,12 +418,20 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
             if (!string.IsNullOrEmpty(picked))
             {
                 picked = ResolveServerPath(picked);
-                gitUrlOverride.value = picked;
+                gitUrl = picked;
                 EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, picked);
                 OnGitUrlChanged?.Invoke();
                 OnHttpServerCommandUpdateRequested?.Invoke();
                 McpLog.Info($"Server source override set to: {picked}");
             }
+        }
+
+        private void OnClearGitUrlClicked()
+        {
+            gitUrl = string.Empty;
+            EditorPrefs.DeleteKey(EditorPrefKeys.GitUrlOverride);
+            OnGitUrlChanged?.Invoke();
+            OnHttpServerCommandUpdateRequested?.Invoke();
         }
 
         /// <summary>
@@ -511,22 +487,22 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
             var deployService = MCPServiceLocator.Deployment;
 
             string sourcePath = deployService.GetStoredSourcePath();
-            deploySourcePath.value = sourcePath ?? string.Empty;
+            deploySourcePath = sourcePath ?? string.Empty;
 
-            deployTargetLabel.text = $"Target: {deployService.GetTargetDisplayPath()}";
+            deployTargetText = $"Target: {deployService.GetTargetDisplayPath()}";
 
             string backupPath = deployService.GetLastBackupPath();
             if (deployService.HasBackup())
             {
                 // Use forward slashes to avoid backslash escape sequence issues in UI text
-                deployBackupLabel.text = $"Last backup: {backupPath?.Replace('\\', '/')}";
+                deployBackupText = $"Last backup: {backupPath?.Replace('\\', '/')}";
             }
             else
             {
-                deployBackupLabel.text = "Last backup: none";
+                deployBackupText = "Last backup: none";
             }
 
-            deployRestoreButton?.SetEnabled(deployService.HasBackup());
+            deployRestoreEnabled = deployService.HasBackup();
         }
 
         private void OnBrowseScreenshotsFolderClicked()
@@ -567,8 +543,14 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
             string projectRelative = normalizedPicked.Substring(normalizedRoot.Length);
 
             ScreenshotPreferences.DefaultFolder = projectRelative;
-            screenshotsFolderOverride?.SetValueWithoutNotify(projectRelative);
+            screenshotsFolder = projectRelative;
             McpLog.Info($"Default screenshots folder set to '{projectRelative}'.");
+        }
+
+        private void OnClearScreenshotsFolderClicked()
+        {
+            ScreenshotPreferences.DefaultFolder = string.Empty;
+            screenshotsFolder = string.Empty;
         }
 
         private void OnBrowseDeploySourceClicked()
@@ -638,43 +620,81 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
 
         private void SetDeployStatus(string message, bool isError = false)
         {
-            if (deployStatusLabel == null)
-            {
-                return;
-            }
-
-            deployStatusLabel.text = message;
-            deployStatusLabel.style.color = isError
-                ? new StyleColor(new Color(0.85f, 0.2f, 0.2f))
-                : StyleKeyword.Null;
+            deployStatusText = message;
+            deployStatusIsError = isError;
         }
 
         public void UpdateHealthStatus(bool isHealthy, string statusText)
         {
-            if (healthStatus != null)
-            {
-                healthStatus.text = statusText;
-            }
+            healthStatusText = statusText;
 
-            if (healthIndicator != null)
+            if (isHealthy)
             {
-                healthIndicator.RemoveFromClassList("healthy");
-                healthIndicator.RemoveFromClassList("disconnected");
-                healthIndicator.RemoveFromClassList("unknown");
-
-                if (isHealthy)
-                {
-                    healthIndicator.AddToClassList("healthy");
-                }
-                else if (statusText == HealthStatus.Unknown)
-                {
-                    healthIndicator.AddToClassList("unknown");
-                }
-                else
-                {
-                    healthIndicator.AddToClassList("disconnected");
-                }
+                healthStatusKind = HealthKind.Healthy;
             }
+            else if (statusText == HealthStatus.Unknown)
+            {
+                healthStatusKind = HealthKind.Unknown;
+            }
+            else
+            {
+                healthStatusKind = HealthKind.Disconnected;
+            }
+        }
+
+        private Color GetUvxStatusColor()
+        {
+            switch (uvxPathStatus)
+            {
+                case UvxStatusKind.Valid:
+                    return ValidColor;
+                case UvxStatusKind.Warning:
+                    return WarningColor;
+                default:
+                    return InvalidColor;
+            }
+        }
+
+        private Color GetHealthColor()
+        {
+            switch (healthStatusKind)
+            {
+                case HealthKind.Healthy:
+                    return ValidColor;
+                case HealthKind.Unknown:
+                    return UnknownColor;
+                default:
+                    return InvalidColor;
+            }
+        }
+
+        private static void DrawStatusDot(Color color)
+        {
+            Rect rect = GUILayoutUtility.GetRect(10f, 10f, GUILayout.Width(10f), GUILayout.Height(10f));
+            Color previousColor = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(rect, GetDotTexture(Color.white));
+            GUI.color = previousColor;
+        }
+
+        private static Texture2D GetDotTexture(Color color)
+        {
+            Texture2D texture;
+            if (!DotTextureCache.TryGetValue(color, out texture) || texture == null)
+            {
+                texture = new Texture2D(8, 8, TextureFormat.RGBA32, false);
+                texture.hideFlags = HideFlags.HideAndDontSave;
+                texture.wrapMode = TextureWrapMode.Clamp;
+                Color[] pixels = new Color[64];
+                for (int i = 0; i < pixels.Length; i++)
+                {
+                    pixels[i] = color;
+                }
+                texture.SetPixels(pixels);
+                texture.Apply();
+                DotTextureCache[color] = texture;
+            }
+            return texture;
         }
     }
 }

@@ -3,31 +3,26 @@ using System.Collections;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Constants;
-using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Windows.Components.AssetGen;
 using NUnit.Framework;
 using UnityEditor;
-using UnityEngine;
 using UnityEngine.TestTools;
-using UnityEngine.UIElements;
 
 namespace MCPForUnityTests.Editor.Blender
 {
     /// <summary>
-    /// Drives the Blender Bridge panel built from the real UXML: the addon status line, the optional
-    /// checkout note, the import button, and the automatic socket probe against a fake addon. Every
-    /// Blender EditorPref is saved and restored, and the socket defaults to a closed local port so no
-    /// test ever reaches a real Blender.
+    /// Drives the IMGUI Blender Bridge panel controller: the addon status fields, the connection
+    /// status (text + state) and the automatic socket probe against a fake addon. State is asserted
+    /// through the panel's private fields via reflection. Every Blender EditorPref is saved and
+    /// restored, and the socket defaults to a closed local port so no test ever reaches a real
+    /// Blender.
     /// </summary>
     public class McpBlenderBridgePanelTests
     {
-        private const string UxmlPath = "Packages/com.coplaydev.unity-mcp/Editor/Windows/Components/AssetGen/McpAssetGenSection.uxml";
-        private static readonly Color Green = new Color(0.4f, 0.8f, 0.4f);
-        private static readonly Color Gray = new Color(0.7f, 0.7f, 0.7f);
-
         private string savedHost, savedFork, savedAddons;
         private int? savedPort;
         private string root;
@@ -74,26 +69,34 @@ namespace MCPForUnityTests.Editor.Blender
             return port;
         }
 
-        /// <summary>Clones the Asset Gen UXML and builds the panel controller on its Blender block.</summary>
-        private static VisualElement BuildPanel()
-        {
-            var tree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(UxmlPath);
-            Assert.IsNotNull(tree, $"Asset Gen UXML not found at {UxmlPath}");
-            VisualElement block = tree.CloneTree().Q<VisualElement>("blender-bridge-panel");
-            Assert.IsNotNull(block, "blender-bridge-panel is missing from the UXML");
-            new McpBlenderBridgePanel(block);
-            return block;
-        }
+        /// <summary>Builds the panel controller; the constructor syncs prefs and probes the socket.</summary>
+        private static McpBlenderBridgePanel BuildPanel() => new McpBlenderBridgePanel();
 
-        private static Label AddonStatus(VisualElement block) => block.Q<Label>("blender-addons-resolved");
+        private static object Field(object panel, string name) =>
+            typeof(McpBlenderBridgePanel).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(panel);
+
+        /// <summary>The header status line next to the status dot.</summary>
+        private static string StatusText(object panel) => (string)Field(panel, "statusText");
+
+        /// <summary>Status dot colour as an int: 1 = green (reachable), -1 = red (failed), 0 = amber (unknown).</summary>
+        private static int StatusState(object panel) => (int)Field(panel, "statusState");
+
+        /// <summary>The resolved addons-dir / addon-installation line.</summary>
+        private static string AddonsStatus(object panel) => (string)Field(panel, "addonsResolvedText");
+
+        /// <summary>True when the addons line is green, dim (grey) otherwise.</summary>
+        private static bool AddonsStatusOk(object panel) => (bool)Field(panel, "addonsResolvedOk");
+
+        /// <summary>True while a bridge action is in flight (action buttons disabled).</summary>
+        private static bool Busy(object panel) => (bool)Field(panel, "busy");
 
         [Test]
         public void AddonStatus_MissingAddonsFolder_IsGrayAndNotCreatedYet()
         {
-            Label status = AddonStatus(BuildPanel());
-            StringAssert.Contains("(not created yet)", status.text);
-            StringAssert.Contains("BlenderMCP addon: not installed", status.text);
-            Assert.AreEqual(Gray, status.style.color.value);
+            var panel = BuildPanel();
+            StringAssert.Contains("(not created yet)", AddonsStatus(panel));
+            StringAssert.Contains("BlenderMCP addon: not installed", AddonsStatus(panel));
+            Assert.IsFalse(AddonsStatusOk(panel), "A missing addons folder must keep the dim (grey) status.");
         }
 
         [Test]
@@ -101,10 +104,10 @@ namespace MCPForUnityTests.Editor.Blender
         {
             Directory.CreateDirectory(root + "/addons");
             BlenderBridgePrefs.AddonsDirOverride = root + "/addons";
-            Label status = AddonStatus(BuildPanel());
-            StringAssert.DoesNotContain("not created yet", status.text);
-            StringAssert.Contains("BlenderMCP addon: not installed", status.text);
-            Assert.AreEqual(Gray, status.style.color.value);
+            var panel = BuildPanel();
+            StringAssert.DoesNotContain("not created yet", AddonsStatus(panel));
+            StringAssert.Contains("BlenderMCP addon: not installed", AddonsStatus(panel));
+            Assert.IsFalse(AddonsStatusOk(panel), "A folder without the addon must keep the dim (grey) status.");
         }
 
         [Test]
@@ -113,9 +116,9 @@ namespace MCPForUnityTests.Editor.Blender
             Directory.CreateDirectory(root + "/addons");
             File.WriteAllText(root + "/addons/" + BlenderBridgePrefs.AddonFileName, "# addon\n");
             BlenderBridgePrefs.AddonsDirOverride = root + "/addons";
-            Label status = AddonStatus(BuildPanel());
-            StringAssert.Contains("BlenderMCP addon: installed", status.text);
-            Assert.AreEqual(Green, status.style.color.value);
+            var panel = BuildPanel();
+            StringAssert.Contains("BlenderMCP addon: installed", AddonsStatus(panel));
+            Assert.IsTrue(AddonsStatusOk(panel), "An installed addon must turn the status green.");
         }
 
         [Test]
@@ -128,28 +131,26 @@ namespace MCPForUnityTests.Editor.Blender
             BlenderBridgePrefs.AddonsDirOverride = root + "/addons";
             BlenderBridgePrefs.ForkPath = root + "/checkout";
 
-            Label status = AddonStatus(BuildPanel());
-            StringAssert.Contains("in sync with checkout", status.text);
-            Assert.AreEqual(Green, status.style.color.value);
+            var panel = BuildPanel();
+            StringAssert.Contains("in sync with checkout", AddonsStatus(panel));
+            Assert.IsTrue(AddonsStatusOk(panel));
 
             File.WriteAllText(root + "/checkout/" + BlenderBridgePrefs.AddonFileName, "# addon v2\n");
-            status = AddonStatus(BuildPanel());
-            StringAssert.Contains("differs from checkout (Sync Addon)", status.text);
-            Assert.AreEqual(Gray, status.style.color.value);
+            panel = BuildPanel();
+            StringAssert.Contains("differs from checkout (Sync Addon)", AddonsStatus(panel));
+            Assert.IsFalse(AddonsStatusOk(panel));
         }
 
         [Test]
-        public void CheckoutNote_IsNeutralAndOptional_AndImportButtonIsExplicit()
+        public void CheckoutRow_IsOptional_AndSyncAddonNeedsACheckout()
         {
-            VisualElement block = BuildPanel();
-            Assert.IsNull(block.Q(className: "warning-banner"), "The optional checkout must not look like a warning.");
-            Assert.IsNull(block.Q("blender-not-configured"));
-            StringAssert.Contains("Sync Addon and Check Updates", block.Q<Label>("blender-fork-help").text);
-            Assert.IsFalse(block.Q<Button>("blender-sync-button").enabledSelf, "Sync Addon still needs a checkout.");
+            var panel = BuildPanel();
+            Assert.IsFalse(BlenderBridgePrefs.IsForkConfigured, "The checkout is optional; without one Sync Addon is gated off.");
 
-            Button import = block.Q<Button>("blender-import-button");
-            Assert.AreEqual("Import Blender Selection (GLB)", import.text);
-            StringAssert.Contains("selected in Blender", import.tooltip);
+            Directory.CreateDirectory(root + "/checkout");
+            File.WriteAllText(root + "/checkout/" + BlenderBridgePrefs.AddonFileName, "# addon\n");
+            BlenderBridgePrefs.ForkPath = root + "/checkout";
+            Assert.IsTrue(BlenderBridgePrefs.IsForkConfigured, "A checkout containing addon.py enables Sync Addon and Check Updates.");
         }
 
         /// <summary>Answers every connection like the BlenderMCP addon answering get_scene_info.</summary>
@@ -185,15 +186,14 @@ namespace MCPForUnityTests.Editor.Blender
                 _ = Task.Run(() => ServeFakeAddon(listener));
                 BlenderBridgePrefs.Port = port;
 
-                VisualElement block = BuildPanel();
-                Label status = block.Q<Label>("blender-status-label");
-                StringAssert.StartsWith($"Checking Blender at 127.0.0.1:{port}", status.text);
-                Assert.IsTrue(block.Q<Button>("blender-import-button").enabledSelf, "An automatic probe must not disable the action buttons.");
+                var panel = BuildPanel();
+                StringAssert.StartsWith($"Checking Blender at 127.0.0.1:{port}", StatusText(panel));
+                Assert.IsFalse(Busy(panel), "An automatic probe must not disable the action buttons.");
 
                 DateTime deadline = DateTime.UtcNow.AddSeconds(15);
-                while (!status.text.StartsWith("Blender reachable") && DateTime.UtcNow < deadline) yield return null;
-                Assert.AreEqual($"Blender reachable at 127.0.0.1:{port}", status.text, "The panel never reported the fake addon as reachable.");
-                Assert.IsTrue(block.Q<VisualElement>("blender-status-dot").ClassListContains("valid"));
+                while (!StatusText(panel).StartsWith("Blender reachable") && DateTime.UtcNow < deadline) yield return null;
+                Assert.AreEqual($"Blender reachable at 127.0.0.1:{port}", StatusText(panel), "The panel never reported the fake addon as reachable.");
+                Assert.AreEqual(1, StatusState(panel), "The status dot must be green (reachable) for the fake addon.");
             }
             finally
             {
@@ -204,14 +204,12 @@ namespace MCPForUnityTests.Editor.Blender
         [UnityTest]
         public IEnumerator AutomaticProbe_ClosedPort_ReportsUnreachable()
         {
-            VisualElement block = BuildPanel();
-            Label status = block.Q<Label>("blender-status-label");
-            VisualElement dot = block.Q<VisualElement>("blender-status-dot");
+            var panel = BuildPanel();
 
             DateTime deadline = DateTime.UtcNow.AddSeconds(15);
-            while (!dot.ClassListContains("invalid") && DateTime.UtcNow < deadline) yield return null;
-            Assert.IsTrue(dot.ClassListContains("invalid"), $"The probe never failed; status: {status.text}");
-            StringAssert.Contains("not reachable", status.text);
+            while (StatusState(panel) != -1 && DateTime.UtcNow < deadline) yield return null;
+            Assert.AreEqual(-1, StatusState(panel), $"The probe never failed; status: {StatusText(panel)}");
+            StringAssert.Contains("not reachable", StatusText(panel));
         }
     }
 }

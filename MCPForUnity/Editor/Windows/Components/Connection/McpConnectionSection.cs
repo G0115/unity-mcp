@@ -7,15 +7,14 @@ using MCPForUnity.Editor.Models;
 using MCPForUnity.Editor.Services;
 using MCPForUnity.Editor.Services.Transport;
 using UnityEditor;
-using UnityEditor.UIElements;
 using UnityEngine;
-using UnityEngine.UIElements;
 
 namespace MCPForUnity.Editor.Windows.Components.Connection
 {
     /// <summary>
     /// Controller for the Connection section of the MCP for Unity editor window.
     /// Handles transport protocol, HTTP/stdio configuration, connection status, and health checks.
+    /// IMGUI implementation: the main window calls <see cref="Draw"/> from OnGUI each frame.
     /// </summary>
     public class McpConnectionSection
     {
@@ -27,33 +26,55 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
             Stdio
         }
 
-        // UI Elements
-        private EnumField transportDropdown;
-        private VisualElement transportMismatchWarning;
-        private Label transportMismatchText;
-        private VisualElement versionMismatchWarning;
-        private Label versionMismatchText;
-        private VisualElement httpUrlRow;
-        private VisualElement httpServerControlRow;
-        private Foldout manualCommandFoldout;
-        private VisualElement httpServerCommandSection;
-        private TextField httpServerCommandField;
-        private Button copyHttpServerCommandButton;
-        private Label httpServerCommandHint;
-        private TextField httpUrlField;
-        private Button startHttpServerButton;
-        private VisualElement unitySocketPortRow;
-        private TextField unityPortField;
-        private VisualElement statusIndicator;
-        private Label connectionStatusLabel;
-        private Button connectionToggleButton;
+        // Approximation of the UXML status-dot classes (connected/disconnected/neutral)
+        private enum StatusDotState
+        {
+            Neutral,
+            Connected,
+            Disconnected
+        }
 
-        // API Key UI Elements (for remote-hosted mode)
-        private VisualElement apiKeyRow;
-        private TextField apiKeyField;
-        private Button getApiKeyButton;
-        private Button clearApiKeyButton;
-        private string cachedLoginUrl;
+        private static readonly string[] TransportOptions = { "HTTP Local", "HTTP Remote", "Stdio" };
+
+        // Control names used to persist text fields on focus-out / Enter (IMGUI equivalent
+        // of the FocusOutEvent/KeyDownEvent callbacks used by the previous UITK implementation).
+        private const string HttpUrlControlName = "McpConnection_HttpUrl";
+        private const string UnityPortControlName = "McpConnection_UnityPort";
+        private const string ApiKeyControlName = "McpConnection_ApiKey";
+
+        // Field-backed UI state (replaces the cached UI Toolkit element tree)
+        private TransportProtocol transportSelection = TransportProtocol.HTTPLocal;
+        private bool transportMismatchVisible;
+        private string transportMismatchText = string.Empty;
+        private bool versionMismatchVisible;
+        private string versionMismatchText = string.Empty;
+        private string httpUrlField = string.Empty;
+        private string apiKeyField = string.Empty;
+        private string startHttpServerButtonText = "Start Server";
+        private bool startHttpServerButtonEnabled;
+        private string startHttpServerButtonTooltip = string.Empty;
+        private string unityPortField = string.Empty;
+        private bool unityPortEnabled = true;
+        private string connectionStatusLabelText = "Disconnected";
+        private string connectionToggleButtonText = "Start Session";
+        private bool connectionToggleButtonEnabled;
+        private string connectionToggleButtonTooltip = string.Empty;
+        private bool showConnectionToggle = true;
+        private StatusDotState statusDotState = StatusDotState.Disconnected;
+        private bool showHttpUrlRow;
+        private bool showApiKeyRow;
+        private bool showHttpServerControlRow;
+        private bool showUnitySocketPortRow;
+        private bool showManualCommandFoldout;
+        private bool manualCommandFoldoutOpen;
+        private bool showHttpServerCommandSection;
+        private string httpServerCommandField = string.Empty;
+        private bool copyHttpServerCommandEnabled;
+        private string httpServerCommandHint = string.Empty;
+        private bool getApiKeyButtonEnabled = true;
+        private bool httpUrlWasFocused;
+        private bool unityPortWasFocused;
+        private bool apiKeyWasFocused;
 
         private bool connectionToggleInProgress;
         private bool httpServerToggleInProgress;
@@ -72,63 +93,25 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
         public event Action OnManualConfigUpdateRequested;
         public event Action OnTransportChanged;
 
-        public VisualElement Root { get; private set; }
-
         public void SetHealthStatusUpdateCallback(Action<bool, string> callback)
         {
             onHealthStatusUpdate = callback;
         }
 
-        public McpConnectionSection(VisualElement root)
+        public McpConnectionSection()
         {
-            Root = root;
-            CacheUIElements();
-            InitializeUI();
-            RegisterCallbacks();
+            InitializeState();
         }
 
-        private void CacheUIElements()
-        {
-            transportDropdown = Root.Q<EnumField>("transport-dropdown");
-            transportMismatchWarning = Root.Q<VisualElement>("transport-mismatch-warning");
-            transportMismatchText = Root.Q<Label>("transport-mismatch-text");
-            versionMismatchWarning = Root.Q<VisualElement>("version-mismatch-warning");
-            versionMismatchText = Root.Q<Label>("version-mismatch-text");
-            httpUrlRow = Root.Q<VisualElement>("http-url-row");
-            httpServerControlRow = Root.Q<VisualElement>("http-server-control-row");
-            manualCommandFoldout = Root.Q<Foldout>("manual-command-foldout");
-            httpServerCommandSection = Root.Q<VisualElement>("http-server-command-section");
-            httpServerCommandField = Root.Q<TextField>("http-server-command");
-            copyHttpServerCommandButton = Root.Q<Button>("copy-http-server-command-button");
-            httpServerCommandHint = Root.Q<Label>("http-server-command-hint");
-            httpUrlField = Root.Q<TextField>("http-url");
-            startHttpServerButton = Root.Q<Button>("start-http-server-button");
-            unitySocketPortRow = Root.Q<VisualElement>("unity-socket-port-row");
-            unityPortField = Root.Q<TextField>("unity-port");
-            statusIndicator = Root.Q<VisualElement>("status-indicator");
-            connectionStatusLabel = Root.Q<Label>("connection-status");
-            connectionToggleButton = Root.Q<Button>("connection-toggle");
-
-            // API Key UI Elements
-            apiKeyRow = Root.Q<VisualElement>("api-key-row");
-            apiKeyField = Root.Q<TextField>("api-key-field");
-            getApiKeyButton = Root.Q<Button>("get-api-key-button");
-            clearApiKeyButton = Root.Q<Button>("clear-api-key-button");
-        }
-
-        private void InitializeUI()
+        private void InitializeState()
         {
             // Ensure manual command foldout starts collapsed
-            if (manualCommandFoldout != null)
-            {
-                manualCommandFoldout.value = false;
-            }
+            manualCommandFoldoutOpen = false;
 
-            transportDropdown.Init(TransportProtocol.HTTPLocal);
             bool useHttpTransport = EditorConfigurationCache.Instance.UseHttpTransport;
             if (!useHttpTransport)
             {
-                transportDropdown.value = TransportProtocol.Stdio;
+                transportSelection = TransportProtocol.Stdio;
             }
             else
             {
@@ -147,175 +130,348 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     }
                 }
 
-                transportDropdown.value = scope == "remote" ? TransportProtocol.HTTPRemote : TransportProtocol.HTTPLocal;
+                transportSelection = scope == "remote" ? TransportProtocol.HTTPRemote : TransportProtocol.HTTPLocal;
             }
 
-            // Set tooltips
-            if (httpUrlField != null)
-                httpUrlField.tooltip = "HTTP endpoint URL for the MCP server. Use localhost for local servers.";
-            if (unityPortField != null)
-                unityPortField.tooltip = "Port for Unity's internal MCP bridge socket. Used for stdio transport.";
-            if (connectionToggleButton != null)
-                connectionToggleButton.tooltip = "Start or end the MCP session between Unity and the server.";
-
-            httpUrlField.value = HttpEndpointUtility.GetBaseUrl();
+            httpUrlField = HttpEndpointUtility.GetBaseUrl();
 
             // Initialize API key field
-            if (apiKeyField != null)
-            {
-                apiKeyField.value = EditorPrefs.GetString(EditorPrefKeys.ApiKey, string.Empty);
-                apiKeyField.tooltip = "API key for remote-hosted MCP server authentication";
-                apiKeyField.isPasswordField = true;
-                apiKeyField.maskChar = '*';
-            }
+            apiKeyField = EditorPrefs.GetString(EditorPrefKeys.ApiKey, string.Empty);
 
             int unityPort = EditorPrefs.GetInt(EditorPrefKeys.UnitySocketPort, 0);
             if (unityPort == 0)
             {
                 unityPort = MCPServiceLocator.Bridge.CurrentPort;
             }
-            unityPortField.value = unityPort.ToString();
+            unityPortField = unityPort.ToString();
 
             UpdateHttpFieldVisibility();
             RefreshHttpUi();
             UpdateConnectionStatus();
         }
 
-        private void RegisterCallbacks()
+        /// <summary>
+        /// Draws the whole Connection section. Called by the main window from OnGUI every frame.
+        /// Layout mirrors McpConnectionSection.uxml top-to-bottom.
+        /// </summary>
+        public void Draw()
         {
-            transportDropdown.RegisterValueChangedCallback(evt =>
+            EditorGUILayout.LabelField("Server", EditorStyles.boldLabel);
+
+            DrawTransportRow();
+            DrawWarningBanners();
+            DrawHttpUrlRow();
+            DrawApiKeyRow();
+            DrawHttpServerControlRow();
+            DrawUnityPortRow();
+            DrawStatusRow();
+            DrawManualCommandFoldout();
+        }
+
+        private void DrawTransportRow()
+        {
+            int selectedIndex = (int)transportSelection;
+            int newSelectedIndex = EditorGUILayout.Popup("Transport:", selectedIndex, TransportOptions);
+            if (newSelectedIndex != selectedIndex)
             {
-                var previous = (TransportProtocol)evt.previousValue;
-                var selected = (TransportProtocol)evt.newValue;
-                bool useHttp = selected != TransportProtocol.Stdio;
-                EditorConfigurationCache.Instance.SetUseHttpTransport(useHttp);
+                TransportProtocol previous = transportSelection;
+                transportSelection = (TransportProtocol)newSelectedIndex;
+                OnTransportSelectionChanged(previous, transportSelection);
+            }
+        }
 
-                // Clear any stale resume flags when user manually changes transport
-                try { EditorPrefs.DeleteKey(EditorPrefKeys.ResumeStdioAfterReload); } catch { }
-                HttpBridgeReloadHandler.CancelPendingResume();
-                HttpAutoStartHandler.CancelPendingReconnect();
-
-                if (useHttp)
-                {
-                    string scope = selected == TransportProtocol.HTTPRemote ? "remote" : "local";
-                    EditorConfigurationCache.Instance.SetHttpTransportScope(scope);
-                }
-
-                // Swap the displayed URL to match the newly selected scope
-                SyncUrlFieldToScope();
-                UpdateHttpFieldVisibility();
-                RefreshHttpUi();
-                UpdateConnectionStatus();
-                OnManualConfigUpdateRequested?.Invoke();
-                OnTransportChanged?.Invoke();
-                McpLog.Info($"Transport changed to: {evt.newValue}");
-
-                // Best-effort: stop the deselected transport to avoid leaving duplicated sessions running.
-                // (Switching between HttpLocal/HttpRemote does not require stopping.)
-                bool prevWasHttp = previous != TransportProtocol.Stdio;
-                bool nextIsHttp = selected != TransportProtocol.Stdio;
-                if (prevWasHttp != nextIsHttp)
-                {
-                    var stopMode = nextIsHttp ? TransportMode.Stdio : TransportMode.Http;
-                    try
-                    {
-                        var stopTask = MCPServiceLocator.TransportManager.StopAsync(stopMode);
-                        stopTask.ContinueWith(t =>
-                        {
-                            try
-                            {
-                                if (t.IsFaulted)
-                                {
-                                    var msg = t.Exception?.GetBaseException()?.Message ?? "Unknown error";
-                                    McpLog.Warn($"Async stop of {stopMode} transport failed: {msg}");
-                                }
-                            }
-                            catch { }
-                        }, TaskScheduler.Default);
-                    }
-                    catch (Exception ex)
-                    {
-                        McpLog.Warn($"Failed to stop previous transport ({stopMode}) after selection change: {ex.Message}");
-                    }
-                }
-            });
-
-            // Don't normalize/overwrite the URL on every keystroke (it fights the user and can duplicate schemes).
-            // Instead, persist + normalize on focus-out / Enter, then update UI once.
-            httpUrlField.RegisterCallback<FocusOutEvent>(_ => PersistHttpUrlFromField());
-            httpUrlField.RegisterCallback<KeyDownEvent>(evt =>
+        private void DrawWarningBanners()
+        {
+            if (transportMismatchVisible && !string.IsNullOrEmpty(transportMismatchText))
             {
-                if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter)
-                {
-                    PersistHttpUrlFromField();
-                    evt.StopPropagation();
-                }
-            });
-
-            if (startHttpServerButton != null)
-            {
-                startHttpServerButton.clicked += OnHttpServerToggleClicked;
+                EditorGUILayout.HelpBox(transportMismatchText, MessageType.Warning);
             }
 
-            if (copyHttpServerCommandButton != null)
+            if (versionMismatchVisible && !string.IsNullOrEmpty(versionMismatchText))
             {
-                copyHttpServerCommandButton.clicked += () =>
+                EditorGUILayout.HelpBox(versionMismatchText, MessageType.Warning);
+            }
+        }
+
+        private void DrawHttpUrlRow()
+        {
+            if (!showHttpUrlRow)
+            {
+                return;
+            }
+
+            GUI.SetNextControlName(HttpUrlControlName);
+            string newUrl = EditorGUILayout.TextField(
+                new GUIContent("HTTP URL:", "HTTP endpoint URL for the MCP server. Use localhost for local servers."),
+                httpUrlField);
+            if (newUrl != httpUrlField)
+            {
+                httpUrlField = newUrl;
+            }
+
+            bool focused = GUI.GetNameOfFocusedControl() == HttpUrlControlName;
+            bool enterPressed = focused
+                && Event.current.type == EventType.KeyDown
+                && (Event.current.keyCode == KeyCode.Return || Event.current.keyCode == KeyCode.KeypadEnter);
+            if ((httpUrlWasFocused && !focused) || enterPressed)
+            {
+                PersistHttpUrlFromField();
+                if (enterPressed)
                 {
-                    if (!string.IsNullOrEmpty(httpServerCommandField?.value) && copyHttpServerCommandButton.enabledSelf)
+                    Event.current.Use();
+                }
+            }
+            httpUrlWasFocused = focused;
+        }
+
+        private void DrawApiKeyRow()
+        {
+            if (!showApiKeyRow)
+            {
+                return;
+            }
+
+            GUI.SetNextControlName(ApiKeyControlName);
+            string newKey = EditorGUILayout.PasswordField(
+                new GUIContent("API Key:", "API key for remote-hosted MCP server authentication"),
+                apiKeyField);
+            if (newKey != apiKeyField)
+            {
+                apiKeyField = newKey;
+            }
+
+            bool focused = GUI.GetNameOfFocusedControl() == ApiKeyControlName;
+            bool enterPressed = focused
+                && Event.current.type == EventType.KeyDown
+                && (Event.current.keyCode == KeyCode.Return || Event.current.keyCode == KeyCode.KeypadEnter);
+            if ((apiKeyWasFocused && !focused) || enterPressed)
+            {
+                PersistApiKeyFromField();
+                if (enterPressed)
+                {
+                    Event.current.Use();
+                }
+            }
+            apiKeyWasFocused = focused;
+
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            using (new EditorGUI.DisabledScope(!getApiKeyButtonEnabled))
+            {
+                if (GUILayout.Button("Get API Key"))
+                {
+                    OnGetApiKeyClicked();
+                }
+            }
+            if (GUILayout.Button("Clear"))
+            {
+                OnClearApiKeyClicked();
+            }
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private void DrawHttpServerControlRow()
+        {
+            if (!showHttpServerControlRow)
+            {
+                return;
+            }
+
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Label("Local Server:", GUILayout.Width(EditorGUIUtility.labelWidth));
+            using (new EditorGUI.DisabledScope(!startHttpServerButtonEnabled))
+            {
+                if (GUILayout.Button(new GUIContent(startHttpServerButtonText, startHttpServerButtonTooltip)))
+                {
+                    OnHttpServerToggleClicked();
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private void DrawUnityPortRow()
+        {
+            if (!showUnitySocketPortRow)
+            {
+                return;
+            }
+
+            GUI.SetNextControlName(UnityPortControlName);
+            using (new EditorGUI.DisabledScope(!unityPortEnabled))
+            {
+                string newPort = EditorGUILayout.TextField(
+                    new GUIContent("Unity Socket Port:", "Port for Unity's internal MCP bridge socket. Used for stdio transport."),
+                    unityPortField);
+                if (newPort != unityPortField)
+                {
+                    unityPortField = newPort;
+                }
+            }
+
+            bool focused = GUI.GetNameOfFocusedControl() == UnityPortControlName;
+            bool enterPressed = focused
+                && Event.current.type == EventType.KeyDown
+                && (Event.current.keyCode == KeyCode.Return || Event.current.keyCode == KeyCode.KeypadEnter);
+            if ((unityPortWasFocused && !focused) || enterPressed)
+            {
+                PersistUnityPortFromField();
+                if (enterPressed)
+                {
+                    Event.current.Use();
+                }
+            }
+            unityPortWasFocused = focused;
+        }
+
+        private void DrawStatusRow()
+        {
+            EditorGUILayout.BeginHorizontal();
+
+            // Status indicator dot (approximation of the "status-dot" element's color classes)
+            Rect rowRect = GUILayoutUtility.GetRect(12f, EditorGUIUtility.singleLineHeight, GUILayout.Width(12f));
+            float dotSize = 10f;
+            Rect dotRect = new Rect(rowRect.x + 1f, rowRect.y + ((rowRect.height - dotSize) / 2f), dotSize, dotSize);
+            EditorGUI.DrawRect(dotRect, GetStatusDotColor());
+
+            GUILayout.Label(connectionStatusLabelText, GUILayout.MinWidth(60f));
+
+            if (showConnectionToggle)
+            {
+                using (new EditorGUI.DisabledScope(!connectionToggleButtonEnabled || connectionToggleInProgress))
+                {
+                    if (GUILayout.Button(
+                        new GUIContent(connectionToggleButtonText, connectionToggleButtonTooltip),
+                        GUILayout.Width(110f)))
                     {
-                        EditorGUIUtility.systemCopyBuffer = httpServerCommandField.value;
+                        OnConnectionToggleClicked();
+                    }
+                }
+            }
+
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private Color GetStatusDotColor()
+        {
+            switch (statusDotState)
+            {
+                case StatusDotState.Connected:
+                    return new Color(0.36f, 0.78f, 0.35f);
+                case StatusDotState.Disconnected:
+                    return new Color(0.86f, 0.35f, 0.28f);
+                default:
+                    return new Color(0.62f, 0.62f, 0.62f);
+            }
+        }
+
+        private void DrawManualCommandFoldout()
+        {
+            if (!showManualCommandFoldout)
+            {
+                return;
+            }
+
+            manualCommandFoldoutOpen = EditorGUILayout.Foldout(manualCommandFoldoutOpen, "Manual Server Launch", true);
+            if (!manualCommandFoldoutOpen || !showHttpServerCommandSection)
+            {
+                return;
+            }
+
+            EditorGUI.indentLevel++;
+
+            EditorGUILayout.LabelField("Use this command to launch the server manually:", EditorStyles.miniLabel);
+
+            EditorGUILayout.BeginHorizontal();
+            using (new EditorGUI.DisabledScope(true))
+            {
+                httpServerCommandField = EditorGUILayout.TextArea(
+                    httpServerCommandField,
+                    GUILayout.MinHeight(EditorGUIUtility.singleLineHeight * 2f));
+            }
+            using (new EditorGUI.DisabledScope(!copyHttpServerCommandEnabled))
+            {
+                if (GUILayout.Button(
+                    "Copy",
+                    GUILayout.Width(50f),
+                    GUILayout.Height(EditorGUIUtility.singleLineHeight * 2f)))
+                {
+                    if (!string.IsNullOrEmpty(httpServerCommandField) && copyHttpServerCommandEnabled)
+                    {
+                        EditorGUIUtility.systemCopyBuffer = httpServerCommandField;
                         McpLog.Info("HTTP server command copied to clipboard.");
                     }
-                };
-            }
-
-            unityPortField.RegisterCallback<FocusOutEvent>(_ => PersistUnityPortFromField());
-            unityPortField.RegisterCallback<KeyDownEvent>(evt =>
-            {
-                if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter)
-                {
-                    PersistUnityPortFromField();
-                    evt.StopPropagation();
                 }
-            });
+            }
+            EditorGUILayout.EndHorizontal();
 
-            connectionToggleButton.clicked += OnConnectionToggleClicked;
-
-            // API Key field callbacks
-            if (apiKeyField != null)
+            if (!string.IsNullOrEmpty(httpServerCommandHint))
             {
-                apiKeyField.RegisterCallback<FocusOutEvent>(_ => PersistApiKeyFromField());
-                apiKeyField.RegisterCallback<KeyDownEvent>(evt =>
+                EditorGUILayout.LabelField(httpServerCommandHint, EditorStyles.wordWrappedMiniLabel);
+            }
+
+            EditorGUI.indentLevel--;
+        }
+
+        private void OnTransportSelectionChanged(TransportProtocol previous, TransportProtocol selected)
+        {
+            bool useHttp = selected != TransportProtocol.Stdio;
+            EditorConfigurationCache.Instance.SetUseHttpTransport(useHttp);
+
+            // Clear any stale resume flags when user manually changes transport
+            try { EditorPrefs.DeleteKey(EditorPrefKeys.ResumeStdioAfterReload); } catch { }
+            HttpBridgeReloadHandler.CancelPendingResume();
+            HttpAutoStartHandler.CancelPendingReconnect();
+
+            if (useHttp)
+            {
+                string scope = selected == TransportProtocol.HTTPRemote ? "remote" : "local";
+                EditorConfigurationCache.Instance.SetHttpTransportScope(scope);
+            }
+
+            // Swap the displayed URL to match the newly selected scope
+            SyncUrlFieldToScope();
+            UpdateHttpFieldVisibility();
+            RefreshHttpUi();
+            UpdateConnectionStatus();
+            OnManualConfigUpdateRequested?.Invoke();
+            OnTransportChanged?.Invoke();
+            McpLog.Info($"Transport changed to: {selected}");
+
+            // Best-effort: stop the deselected transport to avoid leaving duplicated sessions running.
+            // (Switching between HttpLocal/HttpRemote does not require stopping.)
+            bool prevWasHttp = previous != TransportProtocol.Stdio;
+            bool nextIsHttp = selected != TransportProtocol.Stdio;
+            if (prevWasHttp != nextIsHttp)
+            {
+                var stopMode = nextIsHttp ? TransportMode.Stdio : TransportMode.Http;
+                try
                 {
-                    if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter)
+                    var stopTask = MCPServiceLocator.TransportManager.StopAsync(stopMode);
+                    stopTask.ContinueWith(t =>
                     {
-                        PersistApiKeyFromField();
-                        evt.StopPropagation();
-                    }
-                });
-            }
-
-            if (getApiKeyButton != null)
-            {
-                getApiKeyButton.clicked += OnGetApiKeyClicked;
-            }
-
-            if (clearApiKeyButton != null)
-            {
-                clearApiKeyButton.clicked += OnClearApiKeyClicked;
+                        try
+                        {
+                            if (t.IsFaulted)
+                            {
+                                var msg = t.Exception?.GetBaseException()?.Message ?? "Unknown error";
+                                McpLog.Warn($"Async stop of {stopMode} transport failed: {msg}");
+                            }
+                        }
+                        catch { }
+                    }, TaskScheduler.Default);
+                }
+                catch (Exception ex)
+                {
+                    McpLog.Warn($"Failed to stop previous transport ({stopMode}) after selection change: {ex.Message}");
+                }
             }
         }
 
         private void PersistHttpUrlFromField()
         {
-            if (httpUrlField == null)
-            {
-                return;
-            }
-
-            HttpEndpointUtility.SaveBaseUrl(httpUrlField.text);
-            // Update displayed value to normalized form without re-triggering callbacks/caret jumps.
-            httpUrlField.SetValueWithoutNotify(HttpEndpointUtility.GetBaseUrl());
+            HttpEndpointUtility.SaveBaseUrl(httpUrlField);
+            // Update displayed value to normalized form.
+            httpUrlField = HttpEndpointUtility.GetBaseUrl();
             // Invalidate cached login URL so it is re-fetched for the new base URL.
             cachedLoginUrl = null;
             OnManualConfigUpdateRequested?.Invoke();
@@ -392,11 +548,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
             // For Stdio/HTTP Remote: always show the session toggle button.
             // This separates server lifecycle from session lifecycle for multi-instance scenarios.
             // We use lastLocalServerRunning which was just refreshed by UpdateStartHttpButtonState() above.
-            if (connectionToggleButton != null)
-            {
-                bool showSessionToggle = !showLocalServerControls || lastLocalServerRunning;
-                connectionToggleButton.style.display = showSessionToggle ? DisplayStyle.Flex : DisplayStyle.None;
-            }
+            showConnectionToggle = !showLocalServerControls || lastLocalServerRunning;
 
             if (isRunning)
             {
@@ -407,15 +559,14 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     ? System.IO.Path.GetFileName(projectDir)
                     : "Unity";
                 if (string.IsNullOrEmpty(instanceName)) instanceName = "Unity";
-                connectionStatusLabel.text = $"Session Active ({instanceName})";
-                statusIndicator.RemoveFromClassList("disconnected");
-                statusIndicator.AddToClassList("connected");
-                connectionToggleButton.text = stdioSelected ? "End Session" : "Disconnect";
-                connectionToggleButton.SetEnabled(true); // Re-enable in case it was disabled during resumption
+                connectionStatusLabelText = $"Session Active ({instanceName})";
+                statusDotState = StatusDotState.Connected;
+                connectionToggleButtonText = stdioSelected ? "End Session" : "Disconnect";
+                connectionToggleButtonEnabled = true; // Re-enable in case it was disabled during resumption
 
                 // Force the UI to reflect the actual port being used
-                unityPortField.value = bridgeService.CurrentPort.ToString();
-                unityPortField.SetEnabled(false);
+                unityPortField = bridgeService.CurrentPort.ToString();
+                unityPortEnabled = false;
             }
             else
             {
@@ -426,22 +577,19 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
 
                 if (isStdioResuming)
                 {
-                    connectionStatusLabel.text = "Resuming...";
+                    connectionStatusLabelText = "Resuming...";
                     // Keep the indicator in a neutral/transitional state
-                    statusIndicator.RemoveFromClassList("connected");
-                    statusIndicator.RemoveFromClassList("disconnected");
-                    connectionToggleButton.text = stdioSelected ? "Start Session" : "Connect";
-                    connectionToggleButton.SetEnabled(false);
+                    statusDotState = StatusDotState.Neutral;
+                    connectionToggleButtonText = stdioSelected ? "Start Session" : "Connect";
+                    connectionToggleButtonEnabled = false;
                 }
                 else
                 {
-                    connectionStatusLabel.text = "No Session";
-                    statusIndicator.RemoveFromClassList("connected");
-                    statusIndicator.AddToClassList("disconnected");
-                    connectionToggleButton.text = stdioSelected ? "Start Session" : "Connect";
+                    connectionStatusLabelText = "No Session";
+                    statusDotState = StatusDotState.Disconnected;
+                    connectionToggleButtonText = stdioSelected ? "Start Session" : "Connect";
 
-                    bool httpRemoteSelected = transportDropdown != null
-                        && (TransportProtocol)transportDropdown.value == TransportProtocol.HTTPRemote;
+                    bool httpRemoteSelected = transportSelection == TransportProtocol.HTTPRemote;
                     bool httpRemoteNeedsKey = httpRemoteSelected
                         && string.IsNullOrEmpty(EditorPrefs.GetString(EditorPrefKeys.ApiKey, string.Empty));
                     string remoteUrlError = null;
@@ -456,143 +604,96 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     bool blockedByRemoteUrlPolicy = httpRemoteSelected && !remoteUrlAllowed;
                     bool blockedByLocalUrlPolicy = httpLocalSelected && !localUrlAllowed;
                     bool canStartSession = !httpRemoteNeedsKey && !blockedByRemoteUrlPolicy && !blockedByLocalUrlPolicy;
-                    connectionToggleButton.SetEnabled(canStartSession);
+                    connectionToggleButtonEnabled = canStartSession;
 
                     if (httpRemoteNeedsKey)
                     {
-                        connectionToggleButton.tooltip = "An API key is required for HTTP Remote. Enter one above.";
+                        connectionToggleButtonTooltip = "An API key is required for HTTP Remote. Enter one above.";
                     }
                     else if (blockedByRemoteUrlPolicy)
                     {
-                        connectionToggleButton.tooltip = remoteUrlError ?? "HTTP Remote URL is blocked by current security settings.";
+                        connectionToggleButtonTooltip = remoteUrlError ?? "HTTP Remote URL is blocked by current security settings.";
                     }
                     else if (blockedByLocalUrlPolicy)
                     {
-                        connectionToggleButton.tooltip = localUrlError ?? "HTTP Local URL is blocked by current security settings.";
+                        connectionToggleButtonTooltip = localUrlError ?? "HTTP Local URL is blocked by current security settings.";
                     }
                     else
                     {
-                        connectionToggleButton.tooltip = string.Empty;
+                        connectionToggleButtonTooltip = string.Empty;
                     }
                 }
 
-                unityPortField.SetEnabled(!isStdioResuming);
+                unityPortEnabled = !isStdioResuming;
 
                 int savedPort = EditorPrefs.GetInt(EditorPrefKeys.UnitySocketPort, 0);
-                unityPortField.value = (savedPort == 0
+                unityPortField = (savedPort == 0
                     ? bridgeService.CurrentPort
                     : savedPort).ToString();
             }
-
-            // For stdio session toggling, make End Session visually "danger" (red).
-            // (HTTP Local uses the consolidated Start/Stop Server button instead.)
-            connectionToggleButton?.EnableInClassList("server-running", isRunning && stdioSelected);
         }
 
         public void UpdateHttpServerCommandDisplay()
         {
-            if (httpServerCommandSection == null || httpServerCommandField == null)
-            {
-                return;
-            }
-
-            bool useHttp = transportDropdown != null && (TransportProtocol)transportDropdown.value != TransportProtocol.Stdio;
+            bool useHttp = transportSelection != TransportProtocol.Stdio;
             bool httpLocalSelected = IsHttpLocalSelected();
             bool isLocalHttpUrlAllowed = TryGetLocalHttpLaunchPolicy(out _, out string localUrlError);
 
             // Only show the local-server helper UI when HTTP Local is selected.
             if (!useHttp || !httpLocalSelected)
             {
-                httpServerCommandSection.style.display = DisplayStyle.None;
-                httpServerCommandField.value = string.Empty;
-                httpServerCommandField.tooltip = string.Empty;
-                httpServerCommandField.SetEnabled(false);
-                if (httpServerCommandHint != null)
-                {
-                    httpServerCommandHint.text = string.Empty;
-                }
-                if (copyHttpServerCommandButton != null)
-                {
-                    copyHttpServerCommandButton.SetEnabled(false);
-                }
+                showHttpServerCommandSection = false;
+                httpServerCommandField = string.Empty;
+                httpServerCommandHint = string.Empty;
+                copyHttpServerCommandEnabled = false;
                 return;
             }
 
-            httpServerCommandSection.style.display = DisplayStyle.Flex;
+            showHttpServerCommandSection = true;
 
             if (!isLocalHttpUrlAllowed)
             {
-                httpServerCommandField.value = string.Empty;
-                httpServerCommandField.tooltip = string.Empty;
-                httpServerCommandField.SetEnabled(false);
-                httpServerCommandSection.EnableInClassList("http-local-invalid-url", true);
-                if (httpServerCommandHint != null)
-                {
-                    string requirements = HttpEndpointUtility.GetHttpLocalHostRequirementText();
-                    httpServerCommandHint.text = $"⚠ {localUrlError ?? $"HTTP Local requires a loopback URL ({requirements})."}";
-                    httpServerCommandHint.AddToClassList("http-local-url-error");
-                }
-                copyHttpServerCommandButton?.SetEnabled(false);
+                httpServerCommandField = string.Empty;
+                string requirements = HttpEndpointUtility.GetHttpLocalHostRequirementText();
+                httpServerCommandHint = $"⚠ {localUrlError ?? $"HTTP Local requires a loopback URL ({requirements})."}";
+                copyHttpServerCommandEnabled = false;
                 return;
-            }
-
-            httpServerCommandSection.EnableInClassList("http-local-invalid-url", false);
-            httpServerCommandField.SetEnabled(true);
-            if (httpServerCommandHint != null)
-            {
-                httpServerCommandHint.RemoveFromClassList("http-local-url-error");
             }
 
             if (MCPServiceLocator.Server.TryGetLocalHttpServerCommand(out var command, out var error))
             {
-                httpServerCommandField.value = command;
-                httpServerCommandField.tooltip = command;
-                if (httpServerCommandHint != null)
-                {
-                    httpServerCommandHint.text = "Run this command in your shell if you prefer to start the server manually.";
-                }
-                if (copyHttpServerCommandButton != null)
-                {
-                    copyHttpServerCommandButton.SetEnabled(true);
-                }
+                httpServerCommandField = command;
+                httpServerCommandHint = "Run this command in your shell if you prefer to start the server manually.";
+                copyHttpServerCommandEnabled = true;
             }
             else
             {
-                httpServerCommandField.value = string.Empty;
-                httpServerCommandField.tooltip = string.Empty;
-                if (httpServerCommandHint != null)
-                {
-                    httpServerCommandHint.text = error ?? "The command is not available with the current configuration.";
-                }
-                if (copyHttpServerCommandButton != null)
-                {
-                    copyHttpServerCommandButton.SetEnabled(false);
-                }
+                httpServerCommandField = string.Empty;
+                httpServerCommandHint = error ?? "The command is not available with the current configuration.";
+                copyHttpServerCommandEnabled = false;
             }
         }
 
         private void UpdateHttpFieldVisibility()
         {
-            bool useHttp = (TransportProtocol)transportDropdown.value != TransportProtocol.Stdio;
+            bool useHttp = transportSelection != TransportProtocol.Stdio;
             bool httpLocalSelected = IsHttpLocalSelected();
-            bool httpRemoteSelected = transportDropdown != null && (TransportProtocol)transportDropdown.value == TransportProtocol.HTTPRemote;
+            bool httpRemoteSelected = transportSelection == TransportProtocol.HTTPRemote;
 
-            httpUrlRow.style.display = useHttp ? DisplayStyle.Flex : DisplayStyle.None;
-            httpServerControlRow.style.display = useHttp && httpLocalSelected ? DisplayStyle.Flex : DisplayStyle.None;
-            unitySocketPortRow.style.display = useHttp ? DisplayStyle.None : DisplayStyle.Flex;
+            showHttpUrlRow = useHttp;
+            showHttpServerControlRow = useHttp && httpLocalSelected;
+            showUnitySocketPortRow = !useHttp;
 
             // Manual Server Launch foldout only relevant for HTTP Local
-            if (manualCommandFoldout != null)
-                manualCommandFoldout.style.display = httpLocalSelected ? DisplayStyle.Flex : DisplayStyle.None;
+            showManualCommandFoldout = httpLocalSelected;
 
             // API key fields only visible in HTTP Remote mode
-            if (apiKeyRow != null)
-                apiKeyRow.style.display = httpRemoteSelected ? DisplayStyle.Flex : DisplayStyle.None;
+            showApiKeyRow = httpRemoteSelected;
         }
 
         private bool IsHttpLocalSelected()
         {
-            return transportDropdown != null && (TransportProtocol)transportDropdown.value == TransportProtocol.HTTPLocal;
+            return transportSelection == TransportProtocol.HTTPLocal;
         }
 
         private bool TryGetLocalHttpLaunchPolicy(out string localBaseUrl, out string localUrlError)
@@ -603,21 +704,17 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
 
         private void SyncUrlFieldToScope()
         {
-            if (httpUrlField == null) return;
-            httpUrlField.SetValueWithoutNotify(HttpEndpointUtility.GetBaseUrl());
+            httpUrlField = HttpEndpointUtility.GetBaseUrl();
             cachedLoginUrl = null;
         }
 
         private void UpdateStartHttpButtonState()
         {
-            if (startHttpServerButton == null)
-                return;
-
-            bool useHttp = transportDropdown != null && (TransportProtocol)transportDropdown.value != TransportProtocol.Stdio;
+            bool useHttp = transportSelection != TransportProtocol.Stdio;
             if (!useHttp)
             {
-                startHttpServerButton.SetEnabled(false);
-                startHttpServerButton.tooltip = string.Empty;
+                startHttpServerButtonEnabled = false;
+                startHttpServerButtonTooltip = string.Empty;
                 return;
             }
 
@@ -650,23 +747,21 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
             }
 
             // Server button only controls server lifecycle (Start/Stop Server).
-            // Session lifecycle is handled by the separate connectionToggleButton.
+            // Session lifecycle is handled by the separate session toggle button.
             bool shouldShowStop = localServerRunning;
             // While we are launching+connecting and the server isn't up yet, show a transient "Starting…" label.
             if (httpServerToggleInProgress && !localServerRunning)
             {
-                startHttpServerButton.text = "Starting…";
+                startHttpServerButtonText = "Starting…";
             }
             else
             {
-                startHttpServerButton.text = shouldShowStop ? "Stop Server" : "Start Server";
+                startHttpServerButtonText = shouldShowStop ? "Stop Server" : "Start Server";
             }
             // Note: Server logs may contain transient HTTP 400s on /mcp during startup probing and
             // CancelledError stack traces on shutdown when streaming requests are cancelled; this is expected.
-            startHttpServerButton.EnableInClassList("server-running", localServerRunning);
-            startHttpServerButton.SetEnabled(
-                !httpServerToggleInProgress && (shouldShowStop || canStartLocalServer));
-            startHttpServerButton.tooltip = httpLocalSelected
+            startHttpServerButtonEnabled = !httpServerToggleInProgress && (shouldShowStop || canStartLocalServer);
+            startHttpServerButtonTooltip = httpLocalSelected
                 ? (canStartLocalServer
                     ? string.Empty
                     : localUrlError ?? $"HTTP Local requires a loopback URL ({HttpEndpointUtility.GetHttpLocalHostRequirementText()}).")
@@ -688,7 +783,6 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
 
             var bridgeService = MCPServiceLocator.Bridge;
             httpServerToggleInProgress = true;
-            startHttpServerButton?.SetEnabled(false);
 
             try
             {
@@ -805,15 +899,10 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
 
         private void PersistUnityPortFromField()
         {
-            if (unityPortField == null)
-            {
-                return;
-            }
-
-            string input = unityPortField.text?.Trim();
+            string input = unityPortField?.Trim();
             if (!int.TryParse(input, out int requestedPort) || requestedPort <= 0)
             {
-                unityPortField.value = MCPServiceLocator.Bridge.CurrentPort.ToString();
+                unityPortField = MCPServiceLocator.Bridge.CurrentPort.ToString();
                 return;
             }
 
@@ -821,7 +910,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
             {
                 int storedPort = PortManager.SetPreferredPort(requestedPort);
                 EditorPrefs.SetInt(EditorPrefKeys.UnitySocketPort, storedPort);
-                unityPortField.value = storedPort.ToString();
+                unityPortField = storedPort.ToString();
             }
             catch (Exception ex)
             {
@@ -830,7 +919,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     "Port Unavailable",
                     $"The requested port could not be used:\n\n{ex.Message}\n\nReverting to the active Unity port.",
                     "OK");
-                unityPortField.value = MCPServiceLocator.Bridge.CurrentPort.ToString();
+                unityPortField = MCPServiceLocator.Bridge.CurrentPort.ToString();
             }
         }
 
@@ -843,12 +932,10 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
 
             var bridgeService = MCPServiceLocator.Bridge;
             connectionToggleInProgress = true;
-            connectionToggleButton?.SetEnabled(false);
 
             try
             {
-                bool httpRemoteForLog = transportDropdown != null
-                    && (TransportProtocol)transportDropdown.value == TransportProtocol.HTTPRemote;
+                bool httpRemoteForLog = transportSelection == TransportProtocol.HTTPRemote;
 
                 if (bridgeService.IsRunning)
                 {
@@ -936,7 +1023,6 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
             finally
             {
                 connectionToggleInProgress = false;
-                connectionToggleButton?.SetEnabled(true);
                 UpdateConnectionStatus();
             }
         }
@@ -948,7 +1034,6 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
             try
             {
                 connectionToggleInProgress = true;
-                connectionToggleButton?.SetEnabled(false);
 
                 // Clear resume flags to prevent getting stuck in "Resuming..." state
                 try { EditorPrefs.DeleteKey(EditorPrefKeys.ResumeStdioAfterReload); } catch { }
@@ -964,19 +1049,13 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
             finally
             {
                 connectionToggleInProgress = false;
-                connectionToggleButton?.SetEnabled(true);
                 UpdateConnectionStatus();
             }
         }
 
         private void PersistApiKeyFromField()
         {
-            if (apiKeyField == null)
-            {
-                return;
-            }
-
-            string apiKey = apiKeyField.text?.Trim() ?? string.Empty;
+            string apiKey = apiKeyField?.Trim() ?? string.Empty;
             string existingKey = EditorPrefs.GetString(EditorPrefKeys.ApiKey, string.Empty);
 
             if (apiKey != existingKey)
@@ -990,10 +1069,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
 
         private async void OnGetApiKeyClicked()
         {
-            if (getApiKeyButton != null)
-            {
-                getApiKeyButton.SetEnabled(false);
-            }
+            getApiKeyButtonEnabled = false;
 
             try
             {
@@ -1016,10 +1092,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
             }
             finally
             {
-                if (getApiKeyButton != null)
-                {
-                    getApiKeyButton.SetEnabled(true);
-                }
+                getApiKeyButtonEnabled = true;
             }
         }
 
@@ -1064,10 +1137,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
         private void OnClearApiKeyClicked()
         {
             EditorPrefs.SetString(EditorPrefKeys.ApiKey, string.Empty);
-            if (apiKeyField != null)
-            {
-                apiKeyField.SetValueWithoutNotify(string.Empty);
-            }
+            apiKeyField = string.Empty;
             OnManualConfigUpdateRequested?.Invoke();
             UpdateConnectionStatus();
             McpLog.Info("API key cleared");
@@ -1170,13 +1240,10 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
         /// <param name="clientTransport">The transport the client is configured to use.</param>
         public void UpdateTransportMismatchWarning(string clientName, ConfiguredTransport clientTransport)
         {
-            if (transportMismatchWarning == null || transportMismatchText == null)
-                return;
-
             // If client transport is unknown, hide the warning (we can't determine mismatch)
             if (clientTransport == ConfiguredTransport.Unknown)
             {
-                transportMismatchWarning.RemoveFromClassList("visible");
+                transportMismatchVisible = false;
                 return;
             }
 
@@ -1185,7 +1252,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
             // transport, so skip the mismatch check.
             if (ClaudeCliMcpConfigurator.HasClientProjectDirOverride)
             {
-                transportMismatchWarning.RemoveFromClassList("visible");
+                transportMismatchVisible = false;
                 return;
             }
 
@@ -1200,13 +1267,13 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                 string clientTransportName = TransportDisplayName(clientTransport);
                 string serverTransportName = TransportDisplayName(serverTransport);
 
-                transportMismatchText.text = $"⚠ {clientName} is configured for \"{clientTransportName}\" but server is set to \"{serverTransportName}\". " +
+                transportMismatchText = $"⚠ {clientName} is configured for \"{clientTransportName}\" but server is set to \"{serverTransportName}\". " +
                     "Click \"Configure\" in Client Configuration to update.";
-                transportMismatchWarning.AddToClassList("visible");
+                transportMismatchVisible = true;
             }
             else
             {
-                transportMismatchWarning.RemoveFromClassList("visible");
+                transportMismatchVisible = false;
             }
         }
 
@@ -1215,7 +1282,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
         /// </summary>
         public void ClearTransportMismatchWarning()
         {
-            transportMismatchWarning?.RemoveFromClassList("visible");
+            transportMismatchVisible = false;
         }
 
         /// <summary>
@@ -1226,17 +1293,14 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
         /// <param name="mismatchMessage">The mismatch message, or null if no mismatch.</param>
         public void UpdateVersionMismatchWarning(string clientName, string mismatchMessage)
         {
-            if (versionMismatchWarning == null || versionMismatchText == null)
-                return;
-
             if (string.IsNullOrEmpty(mismatchMessage))
             {
-                versionMismatchWarning.RemoveFromClassList("visible");
+                versionMismatchVisible = false;
                 return;
             }
 
-            versionMismatchText.text = $"⚠ {clientName}: {mismatchMessage}";
-            versionMismatchWarning.AddToClassList("visible");
+            versionMismatchText = $"⚠ {clientName}: {mismatchMessage}";
+            versionMismatchVisible = true;
         }
 
         /// <summary>
@@ -1244,7 +1308,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
         /// </summary>
         public void ClearVersionMismatchWarning()
         {
-            versionMismatchWarning?.RemoveFromClassList("visible");
+            versionMismatchVisible = false;
         }
 
         private static string TransportDisplayName(ConfiguredTransport transport)

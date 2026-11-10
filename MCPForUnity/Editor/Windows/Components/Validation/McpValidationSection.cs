@@ -1,9 +1,7 @@
 using System;
 using MCPForUnity.Editor.Constants;
 using UnityEditor;
-using UnityEditor.UIElements;
 using UnityEngine;
-using UnityEngine.UIElements;
 
 namespace MCPForUnity.Editor.Windows.Components.Validation
 {
@@ -13,9 +11,8 @@ namespace MCPForUnity.Editor.Windows.Components.Validation
     /// </summary>
     public class McpValidationSection
     {
-        // UI Elements
-        private EnumField validationLevelField;
-        private Label validationDescription;
+        // UI state (IMGUI backing fields)
+        private string validationDescriptionText = string.Empty;
 
         // Data
         private ValidationLevel currentValidationLevel = ValidationLevel.Standard;
@@ -29,39 +26,36 @@ namespace MCPForUnity.Editor.Windows.Components.Validation
             Strict
         }
 
-        public VisualElement Root { get; private set; }
-
-        public McpValidationSection(VisualElement root)
+        public McpValidationSection()
         {
-            Root = root;
-            CacheUIElements();
             InitializeUI();
-            RegisterCallbacks();
-        }
-
-        private void CacheUIElements()
-        {
-            validationLevelField = Root.Q<EnumField>("validation-level");
-            validationDescription = Root.Q<Label>("validation-description");
         }
 
         private void InitializeUI()
         {
-            validationLevelField.Init(ValidationLevel.Standard);
             int savedLevel = EditorPrefs.GetInt(EditorPrefKeys.ValidationLevel, 1);
             currentValidationLevel = (ValidationLevel)Mathf.Clamp(savedLevel, 0, 3);
-            validationLevelField.value = currentValidationLevel;
             UpdateValidationDescription();
         }
 
-        private void RegisterCallbacks()
+        /// <summary>
+        /// Draws the Script Validation section (mirrors McpValidationSection.uxml layout).
+        /// </summary>
+        public void Draw()
         {
-            validationLevelField.RegisterValueChangedCallback(evt =>
+            GUILayout.Label("Script Validation", EditorStyles.boldLabel);
+
+            GUILayout.Label("Validation Level:", EditorStyles.miniLabel);
+
+            ValidationLevel newLevel = (ValidationLevel)EditorGUILayout.EnumPopup(currentValidationLevel);
+            if (newLevel != currentValidationLevel)
             {
-                currentValidationLevel = (ValidationLevel)evt.newValue;
+                currentValidationLevel = newLevel;
                 EditorPrefs.SetInt(EditorPrefKeys.ValidationLevel, (int)currentValidationLevel);
                 UpdateValidationDescription();
-            });
+            }
+
+            GUILayout.Label(validationDescriptionText, EditorStyles.wordWrappedMiniLabel);
         }
 
         private void UpdateValidationDescription()
@@ -69,19 +63,19 @@ namespace MCPForUnity.Editor.Windows.Components.Validation
             switch (currentValidationLevel)
             {
                 case ValidationLevel.Basic:
-                    validationDescription.text = "Basic: Validates syntax only. Fast compilation checks.";
+                    validationDescriptionText = "Basic: Validates syntax only. Fast compilation checks.";
                     break;
                 case ValidationLevel.Standard:
-                    validationDescription.text = "Standard (Recommended): Checks syntax + common errors. Balanced speed and coverage.";
+                    validationDescriptionText = "Standard (Recommended): Checks syntax + common errors. Balanced speed and coverage.";
                     break;
                 case ValidationLevel.Comprehensive:
-                    validationDescription.text = "Comprehensive: Detailed validation including code quality. Slower but thorough.";
+                    validationDescriptionText = "Comprehensive: Detailed validation including code quality. Slower but thorough.";
                     break;
                 case ValidationLevel.Strict:
-                    validationDescription.text = "Strict: Maximum validation + warnings as errors. Slowest but catches all issues.";
+                    validationDescriptionText = "Strict: Maximum validation + warnings as errors. Slowest but catches all issues.";
                     break;
                 default:
-                    validationDescription.text = "Unknown validation level";
+                    validationDescriptionText = "Unknown validation level";
                     break;
             }
         }

@@ -4,12 +4,9 @@ using System.Threading.Tasks;
 using MCPForUnity.Editor.Clients;
 using MCPForUnity.Editor.Dependencies;
 using MCPForUnity.Editor.Dependencies.Models;
-using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Services;
-using MCPForUnity.Editor.Windows.Components.Branding;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.UIElements;
 
 namespace MCPForUnity.Editor.Windows
 {
@@ -18,35 +15,50 @@ namespace MCPForUnity.Editor.Windows
     /// </summary>
     public class MCPSetupWindow : EditorWindow
     {
-        // UI Elements
-        private VisualElement pythonIndicator;
-        private Label pythonVersion;
-        private Label pythonDetails;
-        private VisualElement uvIndicator;
-        private Label uvVersion;
-        private Label uvDetails;
-        private VisualElement gitIndicator;
-        private Label gitVersion;
-        private Label gitDetails;
-        private Label statusMessage;
-        private VisualElement installationSection;
-        private Label installationInstructions;
-        private Button openPythonLinkButton;
-        private Button openUvLinkButton;
-        private Button installUvButton;
-        private Button refreshButton;
-        private Button doneButton;
+        private enum StatusKind
+        {
+            Valid,
+            Invalid,
+            Neutral
+        }
+
+        /// <summary>
+        /// Rendered state for one dependency row (replaces the cached UI Toolkit labels).
+        /// </summary>
+        internal struct DependencyDisplay
+        {
+            public string Version;
+            public string Details;
+            public Color DetailsColor;
+            public StatusKind Indicator;
+        }
+
+        // Dependency status state (drawn in OnGUI)
+        private DependencyDisplay pythonDisplay;
+        private DependencyDisplay uvDisplay;
+        private DependencyDisplay gitDisplay;
+
+        // Overall status message
+        private string statusMessageText = "";
+        private Color statusMessageColor = Color.gray;
+        private GUIStyle statusMessageStyle;
+
+        // Installation section visibility/content
+        private bool showInstallationSection;
+        private string installationInstructionsText = "";
+        private bool showInstallUvButton;
+        private bool installUvButtonEnabled = true;
+
+        // Wizard step: dependency check vs. client configuration
+        private bool clientsStepActive;
+        private readonly List<(IMcpClientConfigurator client, bool selected)> clientToggles = new List<(IMcpClientConfigurator client, bool selected)>();
+        private bool configureSelectedEnabled = true;
+
+        private Vector2 scrollPosition;
+        private Vector2 clientsScrollPosition;
 
         // Tracks an in-flight uv install so completion is handled on the main thread.
         private Task<UvInstaller.UvInstallResult> _uvInstallTask;
-
-        // Step 2 (Configure Clients) UI elements
-        private VisualElement stepDeps;
-        private VisualElement stepClients;
-        private VisualElement clientsList;
-        private Button skipClientsButton;
-        private Button configureSelectedButton;
-        private readonly List<(IMcpClientConfigurator client, Toggle toggle)> clientToggles = new List<(IMcpClientConfigurator client, Toggle toggle)>();
 
         private DependencyCheckResult _dependencyResult;
 
@@ -58,84 +70,13 @@ namespace MCPForUnity.Editor.Windows
             window.Show();
         }
 
-#if UNITY_2021_1_OR_NEWER
-        public void CreateGUI() => BuildUI();
-#endif
-
-        private void BuildUI()
-        {
-            string basePath = AssetPathUtility.GetMcpPackageRootPath();
-
-            // Load UXML
-            var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(
-                $"{basePath}/Editor/Windows/MCPSetupWindow.uxml"
-            );
-
-            if (visualTree == null)
-            {
-                McpLog.Error($"Failed to load UXML at: {basePath}/Editor/Windows/MCPSetupWindow.uxml");
-                return;
-            }
-
-            visualTree.CloneTree(rootVisualElement);
-
-            // Embed the Ocean brand mark beside the title
-            var setupHeader = rootVisualElement.Q<VisualElement>("setup-header");
-            if (setupHeader != null && setupHeader.Q<OceanMark>() == null)
-            {
-                var logo = new OceanMark { name = "setup-logo" };
-                logo.AddToClassList("setup-logo");
-                setupHeader.Insert(0, logo);
-            }
-
-            // Cache UI elements
-            pythonIndicator = rootVisualElement.Q<VisualElement>("python-indicator");
-            pythonVersion = rootVisualElement.Q<Label>("python-version");
-            pythonDetails = rootVisualElement.Q<Label>("python-details");
-            uvIndicator = rootVisualElement.Q<VisualElement>("uv-indicator");
-            uvVersion = rootVisualElement.Q<Label>("uv-version");
-            uvDetails = rootVisualElement.Q<Label>("uv-details");
-            gitIndicator = rootVisualElement.Q<VisualElement>("git-indicator");
-            gitVersion = rootVisualElement.Q<Label>("git-version");
-            gitDetails = rootVisualElement.Q<Label>("git-details");
-            statusMessage = rootVisualElement.Q<Label>("status-message");
-            installationSection = rootVisualElement.Q<VisualElement>("installation-section");
-            installationInstructions = rootVisualElement.Q<Label>("installation-instructions");
-            openPythonLinkButton = rootVisualElement.Q<Button>("open-python-link-button");
-            openUvLinkButton = rootVisualElement.Q<Button>("open-uv-link-button");
-            installUvButton = rootVisualElement.Q<Button>("install-uv-button");
-            refreshButton = rootVisualElement.Q<Button>("refresh-button");
-            doneButton = rootVisualElement.Q<Button>("done-button");
-            stepDeps = rootVisualElement.Q<VisualElement>("step-deps");
-            stepClients = rootVisualElement.Q<VisualElement>("step-clients");
-            clientsList = rootVisualElement.Q<VisualElement>("clients-list");
-            skipClientsButton = rootVisualElement.Q<Button>("skip-clients-button");
-            configureSelectedButton = rootVisualElement.Q<Button>("configure-selected-button");
-
-            // Register callbacks
-            refreshButton.clicked += OnRefreshClicked;
-            doneButton.clicked += OnDoneClicked;
-            openPythonLinkButton.clicked += OnOpenPythonInstallClicked;
-            openUvLinkButton.clicked += OnOpenUvInstallClicked;
-            if (installUvButton != null) installUvButton.clicked += OnInstallUvClicked;
-            skipClientsButton.clicked += OnSkipClientsClicked;
-            configureSelectedButton.clicked += OnConfigureSelectedClicked;
-
-            // Initial update
-            UpdateUI();
-        }
-
         private void OnEnable()
         {
-#if !UNITY_2021_1_OR_NEWER
-            // Pre-2021 has no CreateGUI callback — build the UI here instead.
-            rootVisualElement?.Clear();
-            BuildUI();
-#endif
             if (_dependencyResult == null)
             {
                 _dependencyResult = DependencyManager.CheckAllDependencies();
             }
+            UpdateUI();
             // Resume polling if a uv install was still in flight when the window was last disabled,
             // so its completion is still processed (button reset, dependencies re-checked).
             if (_uvInstallTask != null)
@@ -143,6 +84,176 @@ namespace MCPForUnity.Editor.Windows
                 EditorApplication.update -= PollUvInstall;
                 EditorApplication.update += PollUvInstall;
             }
+        }
+
+        private void OnDisable()
+        {
+            EditorApplication.update -= PollUvInstall;
+        }
+
+        private void OnGUI()
+        {
+            if (statusMessageStyle == null)
+            {
+                statusMessageStyle = new GUIStyle(EditorStyles.label)
+                {
+                    wordWrap = true
+                };
+            }
+
+            scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition);
+
+            EditorGUILayout.LabelField("MCP for Unity Setup", EditorStyles.boldLabel);
+
+            if (!clientsStepActive)
+            {
+                DrawDependenciesStep();
+            }
+            else
+            {
+                DrawClientsStep();
+            }
+
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawDependenciesStep()
+        {
+            EditorGUILayout.LabelField("System Requirements", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(
+                "MCP for Unity requires Python 3.10+ and UV package manager to function. Git is only needed to install or update the package from a Git URL.",
+                EditorStyles.wordWrappedLabel);
+
+            EditorGUILayout.Space();
+
+            DrawDependencyRow("Python", pythonDisplay);
+            DrawDependencyRow("UV Package Manager", uvDisplay);
+            DrawDependencyRow("Git (optional)", gitDisplay);
+
+            EditorGUILayout.Space();
+
+            statusMessageStyle.normal.textColor = statusMessageColor;
+            EditorGUILayout.LabelField(statusMessageText, statusMessageStyle);
+
+            if (showInstallationSection)
+            {
+                EditorGUILayout.Space();
+                EditorGUILayout.LabelField("Installation Instructions", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField(installationInstructionsText, EditorStyles.wordWrappedLabel);
+
+                EditorGUILayout.BeginHorizontal();
+                using (new EditorGUI.DisabledScope(!installUvButtonEnabled))
+                {
+                    string installUvLabel = installUvButtonEnabled ? "Install UV Automatically" : "Installing UV…";
+                    if (GUILayout.Button(installUvLabel, GUILayout.ExpandWidth(false)))
+                    {
+                        OnInstallUvClicked();
+                    }
+                }
+                if (GUILayout.Button("Open Python Install Page", GUILayout.ExpandWidth(false)))
+                {
+                    OnOpenPythonInstallClicked();
+                }
+                if (GUILayout.Button("Open UV Install Page", GUILayout.ExpandWidth(false)))
+                {
+                    OnOpenUvInstallClicked();
+                }
+                EditorGUILayout.EndHorizontal();
+            }
+
+            EditorGUILayout.Space();
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Refresh"))
+            {
+                OnRefreshClicked();
+            }
+            if (GUILayout.Button("Next"))
+            {
+                OnDoneClicked();
+            }
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private static void DrawDependencyRow(string displayName, DependencyDisplay display)
+        {
+            Color indicatorColor;
+            switch (display.Indicator)
+            {
+                case StatusKind.Valid:
+                    indicatorColor = Color.green;
+                    break;
+                case StatusKind.Invalid:
+                    indicatorColor = Color.red;
+                    break;
+                default:
+                    indicatorColor = Color.gray;
+                    break;
+            }
+
+            EditorGUILayout.BeginHorizontal();
+
+            EditorGUILayout.LabelField(displayName, GUILayout.Width(150f));
+            EditorGUILayout.LabelField(display.Version, GUILayout.Width(90f));
+
+            // Small colored status dot (replaces the CSS-styled indicator element).
+            Rect indicatorRect = GUILayoutUtility.GetRect(12f, 12f, GUILayout.Width(12f));
+            EditorGUI.DrawRect(new Rect(indicatorRect.x + 2f, indicatorRect.y + 2f, 8f, 8f), indicatorColor);
+            GUILayout.FlexibleSpace();
+
+            EditorGUILayout.EndHorizontal();
+
+            Color prevColor = GUI.color;
+            GUI.color = display.DetailsColor;
+            EditorGUILayout.LabelField(display.Details, EditorStyles.wordWrappedMiniLabel);
+            GUI.color = prevColor;
+        }
+
+        private void DrawClientsStep()
+        {
+            EditorGUILayout.LabelField("Configure MCP Clients", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(
+                "We found the following MCP clients on your machine. Select which to configure:",
+                EditorStyles.wordWrappedLabel);
+
+            EditorGUILayout.Space();
+
+            clientsScrollPosition = EditorGUILayout.BeginScrollView(clientsScrollPosition, GUILayout.MaxHeight(240f));
+            for (int i = 0; i < clientToggles.Count; i++)
+            {
+                var entry = clientToggles[i];
+                bool selected = EditorGUILayout.Toggle(
+                    new GUIContent(entry.client.DisplayName, entry.client.GetConfigPath()),
+                    entry.selected);
+                if (selected != entry.selected)
+                {
+                    clientToggles[i] = (entry.client, selected);
+                }
+            }
+            EditorGUILayout.EndScrollView();
+
+            if (clientToggles.Count == 0)
+            {
+                EditorGUILayout.LabelField(
+                    "No supported MCP clients detected on this machine. You can configure clients later from Tools → MCP for Unity.",
+                    EditorStyles.wordWrappedLabel);
+            }
+
+            EditorGUILayout.Space();
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Skip"))
+            {
+                OnSkipClientsClicked();
+            }
+            using (new EditorGUI.DisabledScope(!configureSelectedEnabled))
+            {
+                if (GUILayout.Button("Configure Selected"))
+                {
+                    OnConfigureSelectedClicked();
+                }
+            }
+            EditorGUILayout.EndHorizontal();
         }
 
         private void OnRefreshClicked()
@@ -166,31 +277,19 @@ namespace MCPForUnity.Editor.Windows
 
         private void ShowClientsStep()
         {
-            stepDeps.style.display = DisplayStyle.None;
-            stepClients.style.display = DisplayStyle.Flex;
+            clientsStepActive = true;
             PopulateClientsList();
         }
 
         private void PopulateClientsList()
         {
-            clientsList.Clear();
             clientToggles.Clear();
             foreach (var c in McpClientRegistry.All)
             {
                 if (!c.IsInstalled) continue;
-                var toggle = new Toggle(c.DisplayName)
-                {
-                    value = true,
-                    tooltip = c.GetConfigPath()
-                };
-                clientToggles.Add((c, toggle));
-                clientsList.Add(toggle);
+                clientToggles.Add((c, true));
             }
-            if (clientToggles.Count == 0)
-            {
-                clientsList.Add(new Label("No supported MCP clients detected on this machine. You can configure clients later from Tools → MCP for Unity."));
-                configureSelectedButton.SetEnabled(false);
-            }
+            configureSelectedEnabled = clientToggles.Count > 0;
         }
 
         private void OnSkipClientsClicked()
@@ -203,18 +302,18 @@ namespace MCPForUnity.Editor.Windows
         {
             int success = 0, failure = 0;
             var failures = new List<string>();
-            foreach (var (c, toggle) in clientToggles)
+            foreach (var entry in clientToggles)
             {
-                if (!toggle.value) continue;
+                if (!entry.selected) continue;
                 try
                 {
-                    MCPServiceLocator.Client.ConfigureClient(c);
+                    MCPServiceLocator.Client.ConfigureClient(entry.client);
                     success++;
                 }
                 catch (System.Exception ex)
                 {
                     failure++;
-                    failures.Add($"⚠ {c.DisplayName}: {ex.Message}");
+                    failures.Add($"⚠ {entry.client.DisplayName}: {ex.Message}");
                 }
             }
             if (success == 0 && failure == 0)
@@ -264,10 +363,9 @@ namespace MCPForUnity.Editor.Windows
                 "Cancel");
             if (!proceed) return;
 
-            installUvButton.SetEnabled(false);
-            installUvButton.text = "Installing UV…";
-            statusMessage.text = "Installing uv… this can take a moment.";
-            statusMessage.style.color = new StyleColor(new Color(1f, 0.6f, 0f));
+            installUvButtonEnabled = false;
+            statusMessageText = "Installing uv… this can take a moment.";
+            statusMessageColor = new Color(1f, 0.6f, 0f);
 
             _uvInstallTask = Task.Run(() => UvInstaller.Run());
             EditorApplication.update += PollUvInstall;
@@ -275,9 +373,9 @@ namespace MCPForUnity.Editor.Windows
 
         private void PollUvInstall()
         {
-            // The window/UI may have been torn down while the task ran — stop polling and drop it
-            // (guards against dereferencing UI fields after teardown).
-            if (installUvButton == null || installUvButton.panel == null)
+            // The window may have been torn down while the task ran — stop polling and drop it
+            // (guards against dereferencing window state after teardown).
+            if (this == null)
             {
                 EditorApplication.update -= PollUvInstall;
                 return;
@@ -288,8 +386,7 @@ namespace MCPForUnity.Editor.Windows
             var task = _uvInstallTask;
             _uvInstallTask = null;
 
-            installUvButton.SetEnabled(true);
-            installUvButton.text = "Install UV Automatically";
+            installUvButtonEnabled = true;
 
             // UvInstaller.Run catches its own exceptions, so the task always completes with a result.
             UvInstaller.UvInstallResult result = task.Result;
@@ -309,7 +406,7 @@ namespace MCPForUnity.Editor.Windows
             }
             else
             {
-                // Reset the status label off the "Installing…" state before reporting the failure.
+                // Reset the status message off the "Installing…" state before reporting the failure.
                 UpdateUI();
                 EditorUtility.DisplayDialog(
                     "Install UV Failed",
@@ -317,11 +414,8 @@ namespace MCPForUnity.Editor.Windows
                     result.Output,
                     "OK");
             }
-        }
 
-        private void OnDisable()
-        {
-            EditorApplication.update -= PollUvInstall;
+            Repaint();
         }
 
         private void UpdateUI()
@@ -333,76 +427,82 @@ namespace MCPForUnity.Editor.Windows
             var pythonDep = _dependencyResult.Dependencies.Find(d => d.Name == "Python");
             if (pythonDep != null)
             {
-                UpdateDependencyStatus(pythonIndicator, pythonVersion, pythonDetails, pythonDep);
+                pythonDisplay = BuildDependencyDisplay(pythonDep);
             }
 
             // Update uv status
             var uvDep = _dependencyResult.Dependencies.Find(d => d.Name == "uv Package Manager");
             if (uvDep != null)
             {
-                UpdateDependencyStatus(uvIndicator, uvVersion, uvDetails, uvDep);
+                uvDisplay = BuildDependencyDisplay(uvDep);
             }
 
             // Update git status (optional dependency: never blocks readiness)
             var gitDep = _dependencyResult.Dependencies.Find(d => d.Name == "Git");
             if (gitDep != null)
             {
-                UpdateDependencyStatus(gitIndicator, gitVersion, gitDetails, gitDep);
+                gitDisplay = BuildDependencyDisplay(gitDep);
             }
 
             // Offer the one-click uv installer only when uv is actually missing
             bool uvMissing = uvDep != null && !uvDep.IsAvailable;
-            if (installUvButton != null)
-            {
-                bool showInstall = uvMissing && UvInstaller.IsSupported && _uvInstallTask == null;
-                installUvButton.style.display = showInstall ? DisplayStyle.Flex : DisplayStyle.None;
-            }
+            showInstallUvButton = uvMissing && UvInstaller.IsSupported;
 
             // Update overall status
             if (_dependencyResult.IsSystemReady)
             {
-                statusMessage.text = "✓ All requirements met! MCP for Unity is ready to use.";
-                statusMessage.style.color = new StyleColor(Color.green);
-                installationSection.style.display = DisplayStyle.None;
+                statusMessageText = "✓ All requirements met! MCP for Unity is ready to use.";
+                statusMessageColor = Color.green;
+                showInstallationSection = false;
             }
             else
             {
-                statusMessage.text = "⚠ Missing dependencies. MCP for Unity requires all dependencies to function.";
-                statusMessage.style.color = new StyleColor(new Color(1f, 0.6f, 0f)); // Orange
-                installationSection.style.display = DisplayStyle.Flex;
-                installationInstructions.text = DependencyManager.GetInstallationRecommendations();
+                statusMessageText = "⚠ Missing dependencies. MCP for Unity requires all dependencies to function.";
+                statusMessageColor = new Color(1f, 0.6f, 0f); // Orange
+                showInstallationSection = true;
+                installationInstructionsText = DependencyManager.GetInstallationRecommendations();
             }
         }
 
-        internal static void UpdateDependencyStatus(VisualElement indicator, Label versionLabel, Label detailsLabel, DependencyStatus dep)
+        /// <summary>
+        /// Computes the rendered state for a dependency from its check result
+        /// (replacement for the old class-list-based UpdateDependencyStatus).
+        /// </summary>
+        internal static DependencyDisplay BuildDependencyDisplay(DependencyStatus dep)
         {
+            var display = new DependencyDisplay
+            {
+                Version = dep.Version,
+                Details = dep.Details,
+                DetailsColor = Color.gray,
+                Indicator = StatusKind.Neutral
+            };
+
             if (dep.IsAvailable)
             {
-                indicator.RemoveFromClassList("invalid");
-                indicator.AddToClassList("valid");
-                versionLabel.text = $"v{dep.Version}";
-                detailsLabel.text = dep.Details ?? "Available";
-                detailsLabel.style.color = new StyleColor(Color.gray);
+                display.Indicator = StatusKind.Valid;
+                display.Version = $"v{dep.Version}";
+                display.Details = dep.Details ?? "Available";
+                display.DetailsColor = Color.gray;
             }
             else if (dep.IsRequired)
             {
-                indicator.RemoveFromClassList("valid");
-                indicator.AddToClassList("invalid");
-                versionLabel.text = "Not Found";
-                detailsLabel.text = dep.ErrorMessage ?? "Not available";
-                detailsLabel.style.color = new StyleColor(Color.red);
+                display.Indicator = StatusKind.Invalid;
+                display.Version = "Not Found";
+                display.Details = dep.ErrorMessage ?? "Not available";
+                display.DetailsColor = Color.red;
             }
             else
             {
-                // A missing optional dependency is information, not a blocker. Drop both state
-                // classes so the dot keeps the neutral grey of .status-indicator-small instead of
-                // the red .invalid reserved for required ones, and say what it is for.
-                indicator.RemoveFromClassList("valid");
-                indicator.RemoveFromClassList("invalid");
-                versionLabel.text = "Not Found";
-                detailsLabel.text = dep.Details ?? dep.ErrorMessage ?? "Not available";
-                detailsLabel.style.color = new StyleColor(Color.gray);
+                // A missing optional dependency is information, not a blocker — keep the neutral
+                // grey indicator and say what it is for.
+                display.Indicator = StatusKind.Neutral;
+                display.Version = "Not Found";
+                display.Details = dep.Details ?? dep.ErrorMessage ?? "Not available";
+                display.DetailsColor = Color.gray;
             }
+
+            return display;
         }
     }
 }

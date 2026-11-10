@@ -10,8 +10,7 @@ using MCPForUnity.Editor.Services;
 using MCPForUnity.Editor.Services.Transport;
 using MCPForUnity.Editor.Tools;
 using UnityEditor;
-using UnityEditor.UIElements;
-using UnityEngine.UIElements;
+using UnityEngine;
 
 namespace MCPForUnity.Editor.Windows.Components.Tools
 {
@@ -19,21 +18,28 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
     /// Controller for the Tools section inside the MCP for Unity editor window.
     /// Provides discovery, filtering, and per-tool enablement toggles.
     /// Tools are grouped by their Group property (core first, then alphabetical).
+    /// IMGUI implementation drawn via <see cref="Draw"/> in the main window's OnGUI.
     /// </summary>
     public class McpToolsSection
     {
-        private readonly Dictionary<string, Toggle> toolToggleMap = new Dictionary<string, Toggle>();
-        private Toggle projectScopedToolsToggle;
-        private Label summaryLabel;
-        private Label noteLabel;
-        private Button enableAllButton;
-        private Button disableAllButton;
-        private Button rescanButton;
-        private Button reconfigureButton;
-        private VisualElement categoryContainer;
+        /// <summary>A tool group rendered as one foldout in Draw().</summary>
+        private class CategoryEntry
+        {
+            public string Title;
+            public string PrefsSuffix;
+            public bool IsExperimental;
+            public List<ToolMetadata> Tools;
+            public bool FoldoutOpen;
+        }
+
         private List<ToolMetadata> allTools = new List<ToolMetadata>();
-        private readonly Dictionary<string, Toggle> groupToggleMap = new Dictionary<string, Toggle>();
-        private readonly List<(Foldout foldout, string title, List<ToolMetadata> tools)> foldoutEntries = new List<(Foldout foldout, string title, List<ToolMetadata> tools)>();
+        private readonly List<CategoryEntry> categories = new List<CategoryEntry>();
+        private readonly List<string> infoMessages = new List<string>();
+        private string summaryText = "Discovering tools...";
+        private bool showNote;
+        private string noteText = "Changes apply after reconnecting or re-registering tools.";
+        private bool hasTools;
+        private bool projectScopedTools;
 
         /// <summary>Human-friendly names for tool groups shown in the UI.</summary>
         private static readonly Dictionary<string, string> GroupDisplayNames = new(StringComparer.OrdinalIgnoreCase)
@@ -49,71 +55,86 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
             { "asset_gen", "Asset Gen" },
         };
 
-        public VisualElement Root { get; }
-
-        public McpToolsSection(VisualElement root)
+        public McpToolsSection()
         {
-            Root = root;
-            CacheUIElements();
-            RegisterCallbacks();
+            projectScopedTools = EditorPrefs.GetBool(
+                EditorPrefKeys.ProjectScopedToolsLocalHttp,
+                false
+            );
         }
 
-        private void CacheUIElements()
+        /// <summary>
+        /// Draws the Tools section. Call from the main window's OnGUI.
+        /// Layout order follows McpToolsSection.uxml.
+        /// </summary>
+        public void Draw()
         {
-            projectScopedToolsToggle = Root.Q<Toggle>("project-scoped-tools-toggle");
-            summaryLabel = Root.Q<Label>("tools-summary");
-            noteLabel = Root.Q<Label>("tools-note");
-            enableAllButton = Root.Q<Button>("enable-all-button");
-            disableAllButton = Root.Q<Button>("disable-all-button");
-            rescanButton = Root.Q<Button>("rescan-button");
-            reconfigureButton = Root.Q<Button>("reconfigure-button");
-            categoryContainer = Root.Q<VisualElement>("tool-category-container");
-        }
+            EditorGUILayout.LabelField("Tools", EditorStyles.boldLabel);
 
-        private void RegisterCallbacks()
-        {
-            if (projectScopedToolsToggle != null)
+            // Project-scoped tools row
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("Project-Scoped Tools:", GUILayout.Width(EditorGUIUtility.labelWidth));
+            EditorGUI.BeginChangeCheck();
+            projectScopedTools = EditorGUILayout.Toggle(
+                new GUIContent(string.Empty, "When enabled, register project-scoped tools with HTTP Local and stdio transports. Allows per-project tool customization."),
+                projectScopedTools
+            );
+            if (EditorGUI.EndChangeCheck())
             {
-                projectScopedToolsToggle.value = EditorPrefs.GetBool(
-                    EditorPrefKeys.ProjectScopedToolsLocalHttp,
-                    false
-                );
-                projectScopedToolsToggle.tooltip = "When enabled, register project-scoped tools with HTTP Local and stdio transports. Allows per-project tool customization.";
-                projectScopedToolsToggle.RegisterValueChangedCallback(evt =>
+                EditorPrefs.SetBool(EditorPrefKeys.ProjectScopedToolsLocalHttp, projectScopedTools);
+            }
+            EditorGUILayout.EndHorizontal();
+
+            // Summary
+            EditorGUILayout.HelpBox(summaryText, MessageType.None);
+
+            // Action buttons (row 1: Enable All / Disable All)
+            EditorGUILayout.BeginHorizontal();
+            using (new EditorGUI.DisabledScope(!hasTools))
+            {
+                if (GUILayout.Button("Enable All", GUILayout.Width(100)))
                 {
-                    EditorPrefs.SetBool(EditorPrefKeys.ProjectScopedToolsLocalHttp, evt.newValue);
-                });
-            }
-
-            if (enableAllButton != null)
-            {
-                enableAllButton.AddToClassList("tool-action-button");
-                enableAllButton.style.marginRight = 4;
-                enableAllButton.clicked += () => SetAllToolsState(true);
-            }
-
-            if (disableAllButton != null)
-            {
-                disableAllButton.AddToClassList("tool-action-button");
-                disableAllButton.style.marginRight = 4;
-                disableAllButton.clicked += () => SetAllToolsState(false);
-            }
-
-            if (rescanButton != null)
-            {
-                rescanButton.AddToClassList("tool-action-button");
-                rescanButton.clicked += () =>
+                    SetAllToolsState(true);
+                }
+                if (GUILayout.Button("Disable All", GUILayout.Width(100)))
                 {
-                    McpLog.Info("Rescanning MCP tools from the editor window.");
-                    MCPServiceLocator.ToolDiscovery.InvalidateCache();
-                    Refresh();
-                };
+                    SetAllToolsState(false);
+                }
+            }
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+
+            // Action buttons (row 2: Rescan / Reconfigure Clients)
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Rescan", GUILayout.Width(100)))
+            {
+                McpLog.Info("Rescanning MCP tools from the editor window.");
+                MCPServiceLocator.ToolDiscovery.InvalidateCache();
+                Refresh();
+            }
+            if (GUILayout.Button("Reconfigure Clients", GUILayout.Width(160)))
+            {
+                OnReconfigureClientsClicked();
+            }
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+
+            // Note shown only when tools exist
+            if (showNote)
+            {
+                EditorGUILayout.HelpBox(noteText, MessageType.Info);
             }
 
-            if (reconfigureButton != null)
+            // Info messages (e.g. "No MCP tools found.")
+            foreach (string message in infoMessages)
             {
-                reconfigureButton.AddToClassList("tool-action-button");
-                reconfigureButton.clicked += OnReconfigureClientsClicked;
+                EditorGUILayout.HelpBox(message, MessageType.None);
+            }
+
+            // Tool categories
+            foreach (CategoryEntry category in categories)
+            {
+                DrawCategory(category);
             }
         }
 
@@ -125,35 +146,28 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
         /// </summary>
         public void Refresh()
         {
-            toolToggleMap.Clear();
-            groupToggleMap.Clear();
-            foldoutEntries.Clear();
-            categoryContainer?.Clear();
+            categories.Clear();
+            infoMessages.Clear();
 
             var service = MCPServiceLocator.ToolDiscovery;
             allTools = service.DiscoverAllTools()
                 .OrderBy(tool => tool.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            bool hasTools = allTools.Count > 0;
-            enableAllButton?.SetEnabled(hasTools);
-            disableAllButton?.SetEnabled(hasTools);
+            hasTools = allTools.Count > 0;
+            showNote = hasTools;
 
-            if (noteLabel != null)
+            if (hasTools)
             {
-                noteLabel.style.display = hasTools ? DisplayStyle.Flex : DisplayStyle.None;
-                if (hasTools)
-                {
-                    bool isHttp = EditorConfigurationCache.Instance.UseHttpTransport;
-                    noteLabel.text = isHttp
-                        ? "Changes apply after reconnecting or re-registering tools."
-                        : "Stdio mode: toggles sync at startup. After changing toggles, ask the AI to run manage_tools with action 'sync' to refresh.";
-                }
+                bool isHttp = EditorConfigurationCache.Instance.UseHttpTransport;
+                noteText = isHttp
+                    ? "Changes apply after reconnecting or re-registering tools."
+                    : "Stdio mode: toggles sync at startup. After changing toggles, ask the AI to run manage_tools with action 'sync' to refresh.";
             }
 
             if (!hasTools)
             {
-                AddInfoLabel("No MCP tools found. Add classes decorated with [McpForUnityTool] to expose tools.");
+                infoMessages.Add("No MCP tools found. Add classes decorated with [McpForUnityTool] to expose tools.");
                 UpdateSummary();
                 return;
             }
@@ -208,130 +222,117 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
 
             bool isExperimental = string.Equals(prefsSuffix, "group-probuilder", StringComparison.OrdinalIgnoreCase);
 
-            int enabledCount = toolList.Count(t => MCPServiceLocator.ToolDiscovery.IsToolEnabled(t.Name));
-
             // Default foldout state: core is open, others collapsed
             bool defaultOpen = prefsSuffix == "group-core";
-            var foldout = new Foldout
+            categories.Add(new CategoryEntry
             {
-                text = $"{title} ({enabledCount}/{toolList.Count})",
-                value = EditorPrefs.GetBool(EditorPrefKeys.ToolFoldoutStatePrefix + prefsSuffix, defaultOpen)
-            };
-
-            foldout.RegisterValueChangedCallback(evt =>
-            {
-                if (evt.target != foldout) return;
-                EditorPrefs.SetBool(EditorPrefKeys.ToolFoldoutStatePrefix + prefsSuffix, evt.newValue);
+                Title = title,
+                PrefsSuffix = prefsSuffix,
+                IsExperimental = isExperimental,
+                Tools = toolList,
+                FoldoutOpen = EditorPrefs.GetBool(EditorPrefKeys.ToolFoldoutStatePrefix + prefsSuffix, defaultOpen)
             });
+        }
 
-            // Add a checkbox into the foldout header to toggle all tools in this group
-            bool allEnabled = enabledCount == toolList.Count;
-            var groupCheckbox = new Toggle { value = allEnabled };
-            groupCheckbox.AddToClassList("group-header-checkbox");
-            groupCheckbox.tooltip = $"Toggle all tools in \"{title}\" on or off.";
+        private void DrawCategory(CategoryEntry category)
+        {
+            // Header count is computed live so it stays accurate after toggles.
+            int enabledCount = category.Tools.Count(t => MCPServiceLocator.ToolDiscovery.IsToolEnabled(t.Name));
+            string header = $"{category.Title} ({enabledCount}/{category.Tools.Count})";
 
-            // Prevent the click from propagating to the foldout expand/collapse toggle
-            groupCheckbox.RegisterCallback<ClickEvent>(evt => evt.StopPropagation());
-            groupCheckbox.RegisterValueChangedCallback(evt =>
+            EditorGUILayout.BeginHorizontal();
+            EditorGUI.BeginChangeCheck();
+            category.FoldoutOpen = EditorGUILayout.Foldout(category.FoldoutOpen, header, true);
+            if (EditorGUI.EndChangeCheck())
             {
-                evt.StopPropagation();
-                SetGroupToolsState(toolList, evt.newValue, foldout, title);
-            });
-
-            // Insert the checkbox into the foldout's own header toggle element
-            foldout.Q<Toggle>()?.Add(groupCheckbox);
-            groupToggleMap[prefsSuffix] = groupCheckbox;
-
-            foreach (var tool in toolList)
-            {
-                foldout.Add(CreateToolRow(tool));
+                EditorPrefs.SetBool(EditorPrefKeys.ToolFoldoutStatePrefix + category.PrefsSuffix, category.FoldoutOpen);
             }
 
-            if (isExperimental)
+            // Checkbox in the foldout header to toggle all tools in this group
+            bool allEnabled = enabledCount == category.Tools.Count;
+            EditorGUI.BeginChangeCheck();
+            bool toggleAll = GUILayout.Toggle(
+                allEnabled,
+                new GUIContent(string.Empty, $"Toggle all tools in \"{category.Title}\" on or off."),
+                GUILayout.Width(14)
+            );
+            if (EditorGUI.EndChangeCheck() && toggleAll != allEnabled)
             {
-                var warning = new HelpBox(
+                SetGroupToolsState(category.Tools, toggleAll);
+            }
+            EditorGUILayout.EndHorizontal();
+
+            if (!category.FoldoutOpen)
+            {
+                return;
+            }
+
+            EditorGUI.indentLevel++;
+            if (category.IsExperimental)
+            {
+                EditorGUILayout.HelpBox(
                     "ProBuilder support is experimental. Mesh editing operations may produce " +
                     "unexpected results on complex topologies. Always save your scene before " +
                     "performing destructive operations.",
-                    HelpBoxMessageType.Warning);
-                warning.style.marginTop = 4;
-                warning.style.marginBottom = 2;
-                foldout.Insert(0, warning);
+                    MessageType.Warning
+                );
             }
 
-            foldoutEntries.Add((foldout, title, toolList));
-            categoryContainer?.Add(foldout);
+            foreach (ToolMetadata tool in category.Tools)
+            {
+                DrawToolRow(tool);
+            }
+            EditorGUI.indentLevel--;
         }
 
-        private VisualElement CreateToolRow(ToolMetadata tool)
+        private void DrawToolRow(ToolMetadata tool)
         {
-            var row = new VisualElement();
-            row.AddToClassList("tool-item");
+            bool isEnabled = MCPServiceLocator.ToolDiscovery.IsToolEnabled(tool.Name);
+            string tooltip = string.IsNullOrWhiteSpace(tool.Description) ? tool.Name : tool.Description;
 
-            var header = new VisualElement();
-            header.AddToClassList("tool-item-header");
-
-            var toggle = new Toggle(tool.Name)
+            EditorGUILayout.BeginHorizontal();
+            EditorGUI.BeginChangeCheck();
+            bool newEnabled = GUILayout.Toggle(new GUIContent(tool.Name, tooltip), isEnabled);
+            if (EditorGUI.EndChangeCheck() && newEnabled != isEnabled)
             {
-                value = MCPServiceLocator.ToolDiscovery.IsToolEnabled(tool.Name)
-            };
-            toggle.AddToClassList("tool-item-toggle");
-            toggle.tooltip = string.IsNullOrWhiteSpace(tool.Description) ? tool.Name : tool.Description;
-
-            toggle.RegisterValueChangedCallback(evt =>
-            {
-                HandleToggleChange(tool, evt.newValue);
-            });
-
-            toolToggleMap[tool.Name] = toggle;
-            header.Add(toggle);
-
-            var tagsContainer = new VisualElement();
-            tagsContainer.AddToClassList("tool-tags");
-
-            bool defaultEnabled = tool.AutoRegister || tool.IsBuiltIn;
-            tagsContainer.Add(CreateTag(defaultEnabled ? "On by default" : "Off by default"));
-
-            tagsContainer.Add(CreateTag(tool.StructuredOutput ? "Structured output" : "Free-form"));
-
-            if (tool.RequiresPolling)
-            {
-                tagsContainer.Add(CreateTag($"Polling: {tool.PollAction}"));
+                HandleToggleChange(tool, newEnabled);
             }
 
-            header.Add(tagsContainer);
-            row.Add(header);
+            bool defaultEnabled = tool.AutoRegister || tool.IsBuiltIn;
+            string tags = defaultEnabled ? "On by default" : "Off by default";
+            tags += " | " + (tool.StructuredOutput ? "Structured output" : "Free-form");
+            if (tool.RequiresPolling)
+            {
+                tags += $" | Polling: {tool.PollAction}";
+            }
+
+            GUILayout.FlexibleSpace();
+            GUILayout.Label(tags, EditorStyles.miniLabel, GUILayout.ExpandWidth(false));
+            EditorGUILayout.EndHorizontal();
 
             // Skip auto-generated placeholder descriptions like "Tool: find_gameobjects"
             if (!string.IsNullOrWhiteSpace(tool.Description)
                 && !tool.Description.StartsWith("Tool: ", StringComparison.OrdinalIgnoreCase))
             {
-                var description = new Label(tool.Description);
-                description.AddToClassList("tool-item-description");
-                row.Add(description);
+                EditorGUILayout.LabelField(tool.Description, EditorStyles.miniLabel);
             }
 
             if (tool.Parameters != null && tool.Parameters.Count > 0)
             {
-                var paramSummary = string.Join(", ", tool.Parameters.Select(p =>
+                string paramSummary = string.Join(", ", tool.Parameters.Select(p =>
                     $"{p.Name}{(p.Required ? string.Empty : " (optional)")}: {p.Type}"));
-
-                var parametersLabel = new Label(paramSummary);
-                parametersLabel.AddToClassList("tool-parameters");
-                row.Add(parametersLabel);
+                EditorGUILayout.LabelField(paramSummary, EditorStyles.miniLabel);
             }
 
             if (IsManageCameraTool(tool))
             {
-                row.Add(CreateManageSceneActions());
+                DrawManageSceneActions();
             }
 
             if (IsBatchExecuteTool(tool))
             {
-                row.Add(CreateBatchExecuteSettings());
+                DrawBatchExecuteSettings();
             }
-
-            return row;
         }
 
         private void HandleToggleChange(
@@ -345,8 +346,6 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
             if (updateSummary)
             {
                 UpdateSummary();
-                UpdateFoldoutHeaders();
-                SyncGroupToggles();
             }
 
             if (reregisterTools)
@@ -385,30 +384,14 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
 
             foreach (var tool in allTools)
             {
-                if (!toolToggleMap.TryGetValue(tool.Name, out var toggle))
+                if (MCPServiceLocator.ToolDiscovery.IsToolEnabled(tool.Name) != enabled)
                 {
-                    bool currentEnabled = MCPServiceLocator.ToolDiscovery.IsToolEnabled(tool.Name);
-                    if (currentEnabled != enabled)
-                    {
-                        MCPServiceLocator.ToolDiscovery.SetToolEnabled(tool.Name, enabled);
-                        hasChanges = true;
-                    }
-                    continue;
+                    MCPServiceLocator.ToolDiscovery.SetToolEnabled(tool.Name, enabled);
+                    hasChanges = true;
                 }
-
-                if (toggle.value == enabled)
-                {
-                    continue;
-                }
-
-                toggle.SetValueWithoutNotify(enabled);
-                HandleToggleChange(tool, enabled, updateSummary: false, reregisterTools: false);
-                hasChanges = true;
             }
 
             UpdateSummary();
-            UpdateFoldoutHeaders();
-            SyncGroupToggles();
 
             if (hasChanges)
             {
@@ -417,77 +400,24 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
             }
         }
 
-        private void SetGroupToolsState(List<ToolMetadata> groupTools, bool enabled, Foldout foldout, string title)
+        private void SetGroupToolsState(List<ToolMetadata> groupTools, bool enabled)
         {
             bool hasChanges = false;
 
             foreach (var tool in groupTools)
             {
-                if (toolToggleMap.TryGetValue(tool.Name, out var toggle))
+                if (MCPServiceLocator.ToolDiscovery.IsToolEnabled(tool.Name) != enabled)
                 {
-                    if (toggle.value != enabled)
-                    {
-                        toggle.SetValueWithoutNotify(enabled);
-                        HandleToggleChange(tool, enabled, updateSummary: false, reregisterTools: false);
-                        hasChanges = true;
-                    }
-                }
-                else
-                {
-                    bool currentEnabled = MCPServiceLocator.ToolDiscovery.IsToolEnabled(tool.Name);
-                    if (currentEnabled != enabled)
-                    {
-                        MCPServiceLocator.ToolDiscovery.SetToolEnabled(tool.Name, enabled);
-                        hasChanges = true;
-                    }
+                    MCPServiceLocator.ToolDiscovery.SetToolEnabled(tool.Name, enabled);
+                    hasChanges = true;
                 }
             }
-
-            // Update the foldout header count
-            int enabledCount = groupTools.Count(t => MCPServiceLocator.ToolDiscovery.IsToolEnabled(t.Name));
-            foldout.text = $"{title} ({enabledCount}/{groupTools.Count})";
-
-            // Sync global group toggles after group change
-            SyncGroupToggles();
 
             UpdateSummary();
 
             if (hasChanges)
             {
                 ReregisterToolsAsync();
-            }
-        }
-
-        /// <summary>
-        /// Synchronises group toggle checkmarks with actual tool states.
-        /// Called after individual tool toggles change so the group toggle
-        /// stays accurate.
-        /// </summary>
-        private void SyncGroupToggles()
-        {
-            // We need the grouped tool lists to check states.
-            var builtInTools = allTools.Where(IsBuiltIn).ToList();
-            var grouped = builtInTools
-                .GroupBy(t => t.Group ?? "core")
-                .ToDictionary(g => g.Key, g => g.ToList());
-            var customTools = allTools.Where(t => !IsBuiltIn(t)).ToList();
-
-            foreach (var kvp in groupToggleMap)
-            {
-                List<ToolMetadata> groupTools;
-                if (kvp.Key == "custom")
-                {
-                    groupTools = customTools;
-                }
-                else
-                {
-                    string groupKey = kvp.Key.StartsWith("group-") ? kvp.Key.Substring(6) : kvp.Key;
-                    if (!grouped.TryGetValue(groupKey, out groupTools))
-                        continue;
-                }
-
-                bool allEnabled = groupTools.All(t => MCPServiceLocator.ToolDiscovery.IsToolEnabled(t.Name));
-                kvp.Value.SetValueWithoutNotify(allEnabled);
             }
         }
 
@@ -556,128 +486,66 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
 
         private void UpdateSummary()
         {
-            if (summaryLabel == null)
-            {
-                return;
-            }
-
             if (allTools.Count == 0)
             {
-                summaryLabel.text = "No MCP tools discovered.";
+                summaryText = "No MCP tools discovered.";
                 return;
             }
 
             int enabledCount = allTools.Count(tool => MCPServiceLocator.ToolDiscovery.IsToolEnabled(tool.Name));
-            summaryLabel.text = $"{enabledCount} of {allTools.Count} tools will register with connected clients.";
+            summaryText = $"{enabledCount} of {allTools.Count} tools will register with connected clients.";
         }
 
-        private void UpdateFoldoutHeaders()
+        private void DrawManageSceneActions()
         {
-            foreach (var (foldout, title, tools) in foldoutEntries)
+            EditorGUILayout.LabelField("Capture:", EditorStyles.miniLabel);
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(
+                new GUIContent("Game View", "Capture a game camera screenshot. Default: Assets/Screenshots (configurable in Advanced)."),
+                GUILayout.Width(90)))
             {
-                int enabledCount = tools.Count(t => MCPServiceLocator.ToolDiscovery.IsToolEnabled(t.Name));
-                foldout.text = $"{title} ({enabledCount}/{tools.Count})";
+                OnManageSceneScreenshotClicked();
             }
+            if (GUILayout.Button(
+                new GUIContent("Scene View", "Capture the active Scene View viewport. Default: Assets/Screenshots (configurable in Advanced)."),
+                GUILayout.Width(90)))
+            {
+                OnSceneViewScreenshotClicked();
+            }
+            if (GUILayout.Button(
+                new GUIContent("Multiview", "Capture a 6-angle contact sheet around the scene centre. Default: Assets/Screenshots (configurable in Advanced)."),
+                GUILayout.Width(90)))
+            {
+                OnManageSceneMultiviewClicked();
+            }
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
         }
 
-        private void AddInfoLabel(string message)
+        private void DrawBatchExecuteSettings()
         {
-            var label = new Label(message);
-            label.AddToClassList("help-text");
-            categoryContainer?.Add(label);
-        }
-
-        private VisualElement CreateManageSceneActions()
-        {
-            var actions = new VisualElement();
-            actions.AddToClassList("tool-item-actions");
-
-            var gameViewButton = new Button(OnManageSceneScreenshotClicked)
-            {
-                text = "Game View"
-            };
-            gameViewButton.AddToClassList("tool-action-button");
-            gameViewButton.style.marginTop = 4;
-            gameViewButton.tooltip = "Capture a game camera screenshot. Default: Assets/Screenshots (configurable in Advanced).";
-
-            var sceneViewButton = new Button(OnSceneViewScreenshotClicked)
-            {
-                text = "Scene View"
-            };
-            sceneViewButton.AddToClassList("tool-action-button");
-            sceneViewButton.style.marginTop = 4;
-            sceneViewButton.style.marginLeft = 4;
-            sceneViewButton.tooltip = "Capture the active Scene View viewport. Default: Assets/Screenshots (configurable in Advanced).";
-
-            var multiviewButton = new Button(OnManageSceneMultiviewClicked)
-            {
-                text = "Multiview"
-            };
-            multiviewButton.AddToClassList("tool-action-button");
-            multiviewButton.style.marginTop = 4;
-            multiviewButton.style.marginLeft = 4;
-            multiviewButton.tooltip = "Capture a 6-angle contact sheet around the scene centre. Default: Assets/Screenshots (configurable in Advanced).";
-
-            var captureLabel = new Label("Capture:");
-            captureLabel.style.marginTop = 6;
-            captureLabel.style.unityFontStyleAndWeight = UnityEngine.FontStyle.Normal;
-
-            var row = new VisualElement();
-            row.style.flexDirection = FlexDirection.Row;
-            row.style.flexWrap = Wrap.Wrap;
-            row.Add(gameViewButton);
-            row.Add(sceneViewButton);
-            row.Add(multiviewButton);
-
-            actions.Add(captureLabel);
-            actions.Add(row);
-            return actions;
-        }
-
-        private VisualElement CreateBatchExecuteSettings()
-        {
-            var container = new VisualElement();
-            container.AddToClassList("tool-item-actions");
-            container.style.flexDirection = FlexDirection.Row;
-            container.style.alignItems = Align.Center;
-            container.style.marginTop = 4;
-
-            var label = new Label("Max commands per batch:");
-            label.style.marginRight = 8;
-            label.style.unityFontStyleAndWeight = UnityEngine.FontStyle.Normal;
-            container.Add(label);
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField(
+                new GUIContent("Max commands per batch:", $"Number of commands allowed per batch_execute call (1–{BatchExecute.AbsoluteMaxCommandsPerBatch}). Default: {BatchExecute.DefaultMaxCommandsPerBatch}."),
+                GUILayout.Width(EditorGUIUtility.labelWidth)
+            );
 
             int currentValue = EditorPrefs.GetInt(
                 EditorPrefKeys.BatchExecuteMaxCommands,
                 BatchExecute.DefaultMaxCommandsPerBatch
             );
 
-            var field = new IntegerField
+            int clamped = Math.Clamp(currentValue, 1, BatchExecute.AbsoluteMaxCommandsPerBatch);
+            EditorGUI.BeginChangeCheck();
+            int newValue = EditorGUILayout.IntField(clamped, GUILayout.Width(60));
+            if (EditorGUI.EndChangeCheck())
             {
-                value = Math.Clamp(currentValue, 1, BatchExecute.AbsoluteMaxCommandsPerBatch),
-                style = { width = 60 }
-            };
-            field.tooltip = $"Number of commands allowed per batch_execute call (1–{BatchExecute.AbsoluteMaxCommandsPerBatch}). Default: {BatchExecute.DefaultMaxCommandsPerBatch}.";
-
-            field.RegisterValueChangedCallback(evt =>
-            {
-                int clamped = Math.Clamp(evt.newValue, 1, BatchExecute.AbsoluteMaxCommandsPerBatch);
-                if (clamped != evt.newValue)
-                {
-                    field.SetValueWithoutNotify(clamped);
-                }
+                clamped = Math.Clamp(newValue, 1, BatchExecute.AbsoluteMaxCommandsPerBatch);
                 EditorPrefs.SetInt(EditorPrefKeys.BatchExecuteMaxCommands, clamped);
-            });
+            }
 
-            container.Add(field);
-
-            var hint = new Label($"(max {BatchExecute.AbsoluteMaxCommandsPerBatch})");
-            hint.style.marginLeft = 4;
-            hint.style.color = new UnityEngine.Color(0.5f, 0.5f, 0.5f);
-            hint.style.fontSize = 10;
-            container.Add(hint);
-
-            return container;
+            GUILayout.Label($"(max {BatchExecute.AbsoluteMaxCommandsPerBatch})", EditorStyles.miniLabel, GUILayout.ExpandWidth(false));
+            EditorGUILayout.EndHorizontal();
         }
 
         private void OnManageSceneScreenshotClicked()
@@ -784,13 +652,6 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
             {
                 McpLog.Error($"Failed to capture multiview: {ex.Message}");
             }
-        }
-
-        private static Label CreateTag(string text)
-        {
-            var tag = new Label(text);
-            tag.AddToClassList("tool-tag");
-            return tag;
         }
 
         private static bool IsManageSceneTool(ToolMetadata tool) => string.Equals(tool?.Name, "manage_scene", StringComparison.OrdinalIgnoreCase);

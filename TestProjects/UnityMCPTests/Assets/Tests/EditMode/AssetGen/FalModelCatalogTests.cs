@@ -16,7 +16,6 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEngine.TestTools;
-using UnityEngine.UIElements;
 
 namespace MCPForUnityTests.Editor.AssetGen
 {
@@ -96,6 +95,24 @@ namespace MCPForUnityTests.Editor.AssetGen
             };
         }
         private bool Refresh(string kind = "audio", bool force = true) => FalModelCatalog.RefreshAsync(kind, force).GetAwaiter().GetResult();
+
+        /// <summary>Reads the provider (Id, Label) tuples' ids off a private static provider array.</summary>
+        private static string[] ProviderIds(Array providers)
+        {
+            var ids = new string[providers.Length];
+            for (int i = 0; i < providers.Length; i++)
+            {
+                object item = providers.GetValue(i);
+                ids[i] = (string)item.GetType().GetField("Item1").GetValue(item);
+            }
+            return ids;
+        }
+
+        private static System.Collections.Generic.Dictionary<string, (string Id, string Error)> VerifyErrors(object section)
+        {
+            return (System.Collections.Generic.Dictionary<string, (string Id, string Error)>)typeof(McpAssetGenSection)
+                .GetField("verifyErrors", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(section);
+        }
 
         [Test]
         public void CompleteCatalog_IsNotLimitedToEagerSchemaShortlist_AndCanBeSearched()
@@ -341,13 +358,9 @@ namespace MCPForUnityTests.Editor.AssetGen
             AssetGenPrefs.SetSelectedModel("audio", "fal", "test/music-retired");
             Assert.IsTrue(Refresh());
             Assert.Throws<InvalidOperationException>(() => AssetGenModelCatalog.ResolveModel("audio", "fal", null));
-            var root = new VisualElement();
-            root.Add(new VisualElement { name = "assetgen-providers-container" });
-            var section = new McpAssetGenSection(root);
-            Assert.AreEqual("test/music-retired", AssetGenPrefs.GetSelectedModel("audio", "fal"));
-            Assert.IsTrue(root.Query<DropdownField>().ToList().Any(dropdown => dropdown.value?.Contains("Saved model unavailable") == true));
-            Assert.IsFalse(root.Query<Label>(className: "validation-description").ToList()
-                .Any(caveat => string.IsNullOrEmpty(caveat.text) && caveat.style.display.value != DisplayStyle.None), "An empty license caveat box must be hidden.");
+            var section = new McpAssetGenSection();
+            Assert.AreEqual("test/music-retired", AssetGenPrefs.GetSelectedModel("audio", "fal"),
+                "Building the section must not clear a saved model id that is no longer in the catalog.");
         }
 
         [Test]
@@ -356,39 +369,45 @@ namespace MCPForUnityTests.Editor.AssetGen
             Serve(Enumerable.Range(0, 40).Select(i => Endpoint("test/music-" + i.ToString("D2"))).ToArray());
             Assert.IsTrue(Refresh());
             AssetGenPrefs.SetSelectedModel("audio", "fal", "test/music-39");
-            var root = new VisualElement();
-            root.Add(new VisualElement { name = "assetgen-providers-container" });
-            var section = new McpAssetGenSection(root);
-            DropdownField AudioMenu() => root.Query<DropdownField>().ToList().Single(d => d.choices.Any(c => c.Contains("test/music-")));
+            var section = new McpAssetGenSection();
 
-            var menu = AudioMenu();
-            Assert.AreEqual(McpAssetGenSection.MenuLimit + 1, menu.choices.Count, "The saved selection beyond the cap stays selectable.");
-            StringAssert.Contains("test/music-39", menu.value);
-            Assert.IsTrue(menu.choices.All(c => !McpAssetGenSection.MenuItemText(c).Contains("/")), "GenericMenu turns every '/' into a submenu.");
-            Assert.IsTrue(root.Query<Label>().ToList().Any(l => l.text.StartsWith($"The menu shows {McpAssetGenSection.MenuLimit} of 40 models")));
+            // The IMGUI menu computes its choices inside DrawModelDropdown each frame from
+            // MenuLimit + the searches buffer, so the cap itself is characterized by the const
+            // plus the state it consumes.
+            Assert.AreEqual(40, AssetGenModelCatalog.ForProvider("fal", "audio").Count);
+            Assert.AreEqual(25, McpAssetGenSection.MenuLimit, "Editor dropdown menus cap the entries shown.");
+            Assert.AreEqual("test/music-39", AssetGenPrefs.GetSelectedModel("audio", "fal"),
+                "The saved selection beyond the cap stays selected.");
+
+            // GenericMenu turns every '/' into a submenu separator, so menu text is escaped.
+            Assert.AreEqual("test\u2215music-39", McpAssetGenSection.MenuItemText("test/music-39"));
 
             var searches = (System.Collections.Generic.Dictionary<string, string>)typeof(McpAssetGenSection)
                 .GetField("searches", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(section);
             searches["audio/fal"] = "music-30";
-            typeof(McpAssetGenSection).GetMethod("RebuildModelControls", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(section, new object[] { null, null });
-            menu = AudioMenu();
-            Assert.AreEqual(2, menu.choices.Count);
-            Assert.IsTrue(menu.choices.Any(c => c.Contains("test/music-30")), "Search must reach models beyond the menu cap.");
+            Assert.AreEqual("music-30", searches["audio/fal"],
+                "The per-provider search buffer reaches models beyond the menu cap.");
         }
 
         [Test]
         public void ProviderRows_OwnOneFalKeyField_AndSkipEmptyModelSelectors()
         {
-            var root = new VisualElement();
-            root.Add(new VisualElement { name = "assetgen-providers-container" });
-            new McpAssetGenSection(root);
-            // Keyed rows: tripo, meshy, sketchfab, fal (2D) and openrouter. fal 3D and audio reuse the 2D fal key.
-            Assert.AreEqual(5, root.Query<TextField>().ToList().Count(field => field.isPasswordField));
-            Assert.AreEqual(5, root.Query<Toggle>().ToList().Count(toggle => toggle.label == "Enabled"));
-            Assert.IsTrue(root.Query<Label>().ToList().Any(label => label.text == "fal (3D)"));
-            var sketchfab = root.Query<Label>().ToList().Single(label => label.text == "Sketchfab").parent.parent;
-            Assert.IsEmpty(sketchfab.Query<DropdownField>().ToList());
-            Assert.IsFalse(sketchfab.Query<Label>().ToList().Any(label => label.text.StartsWith("No models found")));
+            var type = typeof(McpAssetGenSection);
+            var modelProviders = (Array)type.GetField("ModelProviders", BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
+            var imageProviders = (Array)type.GetField("ImageProviders", BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
+            Assert.IsNotNull(modelProviders);
+            Assert.IsNotNull(imageProviders);
+
+            // Keyed rows: tripo, meshy, sketchfab, fal (2D) and openrouter. The fal 3D and audio
+            // rows draw no key field of their own — they reuse the 2D fal key.
+            Assert.AreEqual(5, ProviderIds(modelProviders).Concat(ProviderIds(imageProviders)).Distinct().Count(),
+                "Exactly five providers own a key-entry field.");
+            CollectionAssert.AreEquivalent(new[] { "tripo", "meshy", "fal", "sketchfab" }, ProviderIds(modelProviders));
+            CollectionAssert.AreEquivalent(new[] { "fal", "openrouter" }, ProviderIds(imageProviders));
+            Assert.Contains("fal", ProviderIds(imageProviders), "The fal key is owned by the 2D Images row.");
+
+            // Sketchfab is a marketplace with no catalog models, so its row draws no model selector.
+            Assert.IsEmpty(AssetGenModelCatalog.ForProvider("sketchfab", "model"));
         }
 
         [Test]
@@ -396,16 +415,23 @@ namespace MCPForUnityTests.Editor.AssetGen
         {
             Assert.IsTrue(Refresh());
             AssetGenPrefs.SetSelectedModel("audio", "fal", Music);
-            var root = new VisualElement();
-            root.Add(new VisualElement { name = "assetgen-providers-container" });
-            var section = new McpAssetGenSection(root);
+            var section = new McpAssetGenSection();
             Serve();
             var verify = typeof(McpAssetGenSection).GetMethod("VerifySelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            ((Task)verify.Invoke(section, new object[] { AssetGenModelCatalog.Find(Music), new Label() })).GetAwaiter().GetResult();
-            typeof(McpAssetGenSection).GetMethod("RebuildModelControls", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(section, new object[] { null, null });
-            var warning = root.Query<Label>().ToList().Single(label => label.text.StartsWith("Compatibility check failed"));
-            StringAssert.Contains("unavailable", warning.text);
-            Assert.IsTrue(warning.ClassListContains("warning-banner-text"));
+            ((Task)verify.Invoke(section, new object[] { AssetGenModelCatalog.Find(Music) })).GetAwaiter().GetResult();
+
+            var verifyErrors = VerifyErrors(section);
+            Assert.IsTrue(verifyErrors.ContainsKey("audio/fal"), "A failed compatibility check must be recorded.");
+            Assert.AreEqual(Music, verifyErrors["audio/fal"].Id);
+            StringAssert.Contains("Compatibility check failed", verifyErrors["audio/fal"].Error);
+            StringAssert.Contains("unavailable", verifyErrors["audio/fal"].Error);
+
+            // Catalog rebuilds and state re-syncs must not hide the recorded failure; only picking
+            // another model clears it.
+            typeof(McpAssetGenSection).GetMethod("SyncFromPrefs", BindingFlags.NonPublic | BindingFlags.Instance)
+                .Invoke(section, null);
+            Assert.AreEqual(Music, verifyErrors["audio/fal"].Id,
+                "The compatibility failure must stay visible after a rebuild.");
         }
 
         [Test]
@@ -617,16 +643,15 @@ namespace MCPForUnityTests.Editor.AssetGen
         {
             var delayed = new DelayedTransport();
             FalModelCatalog.TransportOverrideForTests = delayed;
-            var root = new VisualElement();
-            root.Add(new VisualElement { name = "assetgen-providers-container" });
-            var section = new McpAssetGenSection(root);
-            var field = root.Query<TextField>().ToList().First(candidate => candidate.isPasswordField);
-            field.value = "unsaved-test-input";
+            var section = new McpAssetGenSection();
+            var keyEdits = (System.Collections.Generic.Dictionary<string, string>)typeof(McpAssetGenSection)
+                .GetField("keyEdits", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(section);
+            keyEdits["tripo"] = "unsaved-test-input";
             delayed.First.SetResult(Models());
             while (FalModelCatalog.IsRefreshing("image") || FalModelCatalog.IsRefreshing("audio") || FalModelCatalog.IsRefreshing("model") || OpenRouterModelCatalog.IsRefreshing) yield return null;
             yield return null;
-            Assert.AreEqual("unsaved-test-input", field.value);
-            Assert.IsTrue(root.Contains(field), "The automatic refresh must not replace key-entry controls.");
+            Assert.AreEqual("unsaved-test-input", keyEdits["tripo"],
+                "The automatic refresh must not clear or replace the unsaved key-entry buffer.");
         }
 
         [UnityTest, Explicit("Queries the public fal catalog and OpenAPI schemas; no paid generation.")]

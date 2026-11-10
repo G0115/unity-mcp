@@ -13,7 +13,6 @@ using MCPForUnity.Editor.Services;
 using MCPForUnity.Editor.Setup;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.UIElements;
 
 namespace MCPForUnity.Editor.Windows.Components.ClientConfig
 {
@@ -23,28 +22,35 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
     /// </summary>
     public class McpClientConfigSection
     {
-        // UI Elements
-        private DropdownField clientDropdown;
-        private Button configureAllButton;
-        private VisualElement clientStatusIndicator;
-        private Label clientStatusLabel;
-        private Button configureButton;
-        private Button installSkillsButton;
-        private VisualElement claudeCliPathRow;
-        private TextField claudeCliPath;
-        private Button browseClaudeButton;
-        private VisualElement clientProjectDirRow;
-        private TextField clientProjectDirField;
-        private Button browseProjectDirButton;
-        private Button clearProjectDirButton;
-        private Foldout clientDetailsFoldout;
-        private Foldout manualConfigFoldout;
-        private TextField configPathField;
-        private Button copyPathButton;
-        private Button openFileButton;
-        private TextField configJsonField;
-        private Button copyJsonButton;
-        private Label installationStepsLabel;
+        /// <summary>
+        /// Approximates the USS-driven status dot colors from the UI Toolkit layout.
+        /// </summary>
+        private enum StatusIndicatorKind
+        {
+            NotConfigured = 0,
+            Configured = 1,
+            Warning = 2,
+            Error = 3
+        }
+
+        // Backing state for the IMGUI draw path (replaces the cached editor toolkit widgets)
+        private readonly string[] clientNames;
+        private StatusIndicatorKind statusIndicatorKind = StatusIndicatorKind.NotConfigured;
+        private string clientStatusText = "Not Configured";
+        private string configureButtonText = "Configure";
+        private bool installSkillsVisible;
+        private bool installSkillsEnabled = true;
+        private string installSkillsText = "Install Skills";
+        private bool claudeCliPathVisible;
+        private string claudeCliPathText = string.Empty;
+        private bool clientProjectDirVisible;
+        private string clientProjectDirText = string.Empty;
+        private bool clientDetailsOpen;
+        private bool manualConfigOpen;
+        private string configPathText = string.Empty;
+        private string configJsonText = string.Empty;
+        private string installationStepsText = string.Empty;
+        private static GUIStyle wrappedLabelStyle;
 
         // Data
         private readonly List<IMcpClientConfigurator> configurators;
@@ -67,49 +73,13 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
         /// </summary>
         public event Action<string, string> OnClientConfigMismatch;
 
-        public VisualElement Root { get; private set; }
-
-        public McpClientConfigSection(VisualElement root)
+        public McpClientConfigSection()
         {
-            Root = root;
             configurators = MCPServiceLocator.Client.GetAllClients().ToList();
-            CacheUIElements();
-            InitializeUI();
-            RegisterCallbacks();
-        }
+            clientNames = configurators.Select(c => c.DisplayName).ToArray();
 
-        private void CacheUIElements()
-        {
-            clientDropdown = Root.Q<DropdownField>("client-dropdown");
-            configureAllButton = Root.Q<Button>("configure-all-button");
-            clientStatusIndicator = Root.Q<VisualElement>("client-status-indicator");
-            clientStatusLabel = Root.Q<Label>("client-status");
-            configureButton = Root.Q<Button>("configure-button");
-            installSkillsButton = Root.Q<Button>("install-skills-button");
-            claudeCliPathRow = Root.Q<VisualElement>("claude-cli-path-row");
-            claudeCliPath = Root.Q<TextField>("claude-cli-path");
-            browseClaudeButton = Root.Q<Button>("browse-claude-button");
-            clientProjectDirRow = Root.Q<VisualElement>("client-project-dir-row");
-            clientProjectDirField = Root.Q<TextField>("client-project-dir");
-            browseProjectDirButton = Root.Q<Button>("browse-project-dir-button");
-            clearProjectDirButton = Root.Q<Button>("clear-project-dir-button");
-            clientDetailsFoldout = Root.Q<Foldout>("client-details-foldout");
-            manualConfigFoldout = Root.Q<Foldout>("manual-config-foldout");
-            configPathField = Root.Q<TextField>("config-path");
-            copyPathButton = Root.Q<Button>("copy-path-button");
-            openFileButton = Root.Q<Button>("open-file-button");
-            configJsonField = Root.Q<TextField>("config-json");
-            copyJsonButton = Root.Q<Button>("copy-json-button");
-            installationStepsLabel = Root.Q<Label>("installation-steps");
-        }
-
-        private void InitializeUI()
-        {
             // Ensure manual config foldout starts collapsed
-            if (manualConfigFoldout != null)
-            {
-                manualConfigFoldout.value = false;
-            }
+            manualConfigOpen = false;
 
             // Default the per-client setup foldout to expanded. The Configure / Unregister
             // button for the currently-selected client lives inside it, and the 9.7.0
@@ -117,18 +87,9 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
             // removed (community report: "the Unregister button was removed in 9.7.0,
             // something is stuck on stdio and I can't switch to local"). The state still
             // persists per-user, so anyone who explicitly collapses it keeps that preference.
-            if (clientDetailsFoldout != null)
-            {
-                clientDetailsFoldout.value = EditorPrefs.GetBool(EditorPrefKeys.ClientDetailsFoldoutOpen, true);
-                clientDetailsFoldout.RegisterValueChangedCallback(evt =>
-                {
-                    EditorPrefs.SetBool(EditorPrefKeys.ClientDetailsFoldoutOpen, evt.newValue);
-                });
-            }
+            clientDetailsOpen = EditorPrefs.GetBool(EditorPrefKeys.ClientDetailsFoldoutOpen, true);
 
-            var clientNames = configurators.Select(c => c.DisplayName).ToList();
-            clientDropdown.choices = clientNames;
-            if (clientNames.Count > 0)
+            if (configurators.Count > 0)
             {
                 // Restore last selected client from EditorPrefs
                 string lastClientId = EditorPrefs.GetString(EditorPrefKeys.LastSelectedClientId, string.Empty);
@@ -136,12 +97,8 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
                 if (restoredIndex < 0)
                     restoredIndex = 0;
 
-                clientDropdown.index = restoredIndex;
                 selectedClientIndex = restoredIndex;
             }
-
-            claudeCliPathRow.style.display = DisplayStyle.None;
-            clientProjectDirRow.style.display = DisplayStyle.None;
 
             // Initialize the configuration display for the first selected client
             UpdateClientStatus();
@@ -151,42 +108,170 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
             UpdateInstallSkillsVisibility();
         }
 
-        private void RegisterCallbacks()
+        /// <summary>
+        /// Draws the Client Configuration section using IMGUI.
+        /// Mirrors the layout order of McpClientConfigSection.uxml.
+        /// </summary>
+        public void Draw()
         {
-            clientDropdown.RegisterValueChangedCallback(evt =>
+            EditorGUILayout.LabelField("Client Configuration", EditorStyles.boldLabel);
+
+            if (GUILayout.Button("Configure All Detected Clients"))
             {
-                int selectedIndex = GetIndexForDropdownValue(evt.newValue);
-                if (selectedIndex < 0)
+                OnConfigureAllClientsClicked();
+            }
+
+            bool detailsOpen = EditorGUILayout.Foldout(clientDetailsOpen, "Per-client setup", true);
+            if (detailsOpen != clientDetailsOpen)
+            {
+                clientDetailsOpen = detailsOpen;
+                EditorPrefs.SetBool(EditorPrefKeys.ClientDetailsFoldoutOpen, detailsOpen);
+            }
+
+            if (clientDetailsOpen)
+            {
+                EditorGUI.indentLevel++;
+
+                // Client selection row
+                if (clientNames != null && clientNames.Length > 0)
                 {
-                    selectedIndex = clientDropdown.index;
-                }
-                if (selectedIndex < 0 || selectedIndex >= configurators.Count)
-                {
-                    return;
+                    int clampedIndex = Mathf.Clamp(selectedClientIndex, 0, clientNames.Length - 1);
+                    int newIndex = EditorGUILayout.Popup("Client:", clampedIndex, clientNames);
+                    if (newIndex != selectedClientIndex)
+                    {
+                        OnClientSelected(newIndex);
+                    }
                 }
 
-                selectedClientIndex = selectedIndex;
-                // Persist the selected client so it's restored on next window open
-                if (selectedClientIndex >= 0 && selectedClientIndex < configurators.Count)
+                // Status row: indicator dot + status label + action buttons
+                EditorGUILayout.BeginHorizontal();
+                DrawStatusIndicator();
+                EditorGUILayout.LabelField(clientStatusText, GUILayout.MinWidth(80f));
+                if (GUILayout.Button(configureButtonText, GUILayout.Width(110f)))
                 {
-                    EditorPrefs.SetString(EditorPrefKeys.LastSelectedClientId, configurators[selectedClientIndex].Id);
+                    OnConfigureClicked();
                 }
-                UpdateClientStatus();
-                UpdateManualConfiguration();
-                UpdateClaudeCliPathVisibility();
-                UpdateClientProjectDirVisibility();
-                UpdateInstallSkillsVisibility();
-            });
+                if (installSkillsVisible)
+                {
+                    using (new EditorGUI.DisabledScope(!installSkillsEnabled || isSkillSyncInProgress))
+                    {
+                        if (GUILayout.Button(installSkillsText, GUILayout.Width(110f)))
+                        {
+                            OnInstallSkillsClicked();
+                        }
+                    }
+                }
+                EditorGUILayout.EndHorizontal();
 
-            configureAllButton.clicked += OnConfigureAllClientsClicked;
-            configureButton.clicked += OnConfigureClicked;
-            installSkillsButton.clicked += OnInstallSkillsClicked;
-            browseClaudeButton.clicked += OnBrowseClaudeClicked;
-            browseProjectDirButton.clicked += OnBrowseProjectDirClicked;
-            clearProjectDirButton.clicked += OnClearProjectDirClicked;
-            copyPathButton.clicked += OnCopyPathClicked;
-            openFileButton.clicked += OnOpenFileClicked;
-            copyJsonButton.clicked += OnCopyJsonClicked;
+                // Claude CLI path row
+                if (claudeCliPathVisible)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    EditorGUILayout.LabelField("Claude CLI Path:", GUILayout.Width(120f));
+                    EditorGUILayout.SelectableLabel(claudeCliPathText, GUILayout.MinWidth(60f));
+                    if (GUILayout.Button("Browse", GUILayout.Width(60f)))
+                    {
+                        OnBrowseClaudeClicked();
+                    }
+                    EditorGUILayout.EndHorizontal();
+                }
+
+                // Client project dir row
+                if (clientProjectDirVisible)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    EditorGUILayout.LabelField("Client Project Dir:", GUILayout.Width(120f));
+                    EditorGUILayout.SelectableLabel(clientProjectDirText, GUILayout.MinWidth(40f));
+                    if (GUILayout.Button("Browse", GUILayout.Width(60f)))
+                    {
+                        OnBrowseProjectDirClicked();
+                    }
+                    if (GUILayout.Button("Clear", GUILayout.Width(50f)))
+                    {
+                        OnClearProjectDirClicked();
+                    }
+                    EditorGUILayout.EndHorizontal();
+                }
+
+                // Manual configuration foldout
+                manualConfigOpen = EditorGUILayout.Foldout(manualConfigOpen, "Manual Configuration", true);
+                if (manualConfigOpen)
+                {
+                    EditorGUILayout.LabelField("Config Path:");
+                    EditorGUILayout.BeginHorizontal();
+                    EditorGUILayout.SelectableLabel(configPathText, GUILayout.MinWidth(60f));
+                    if (GUILayout.Button("Copy", GUILayout.Width(50f)))
+                    {
+                        OnCopyPathClicked();
+                    }
+                    if (GUILayout.Button("Open", GUILayout.Width(50f)))
+                    {
+                        OnOpenFileClicked();
+                    }
+                    EditorGUILayout.EndHorizontal();
+
+                    EditorGUILayout.LabelField("Configuration:");
+                    EditorGUILayout.SelectableLabel(configJsonText, GetWrappedLabelStyle(), GUILayout.MinHeight(96f));
+
+                    EditorGUILayout.LabelField("Installation Steps:");
+                    EditorGUILayout.SelectableLabel(installationStepsText, GetWrappedLabelStyle());
+                }
+
+                EditorGUI.indentLevel--;
+            }
+        }
+
+        private void DrawStatusIndicator()
+        {
+            Rect dotRect = GUILayoutUtility.GetRect(10f, 16f, GUILayout.Width(10f));
+            Color previousColor = GUI.color;
+            GUI.color = GetStatusColor(statusIndicatorKind);
+            GUI.DrawTexture(dotRect, Texture2D.whiteTexture, ScaleMode.ScaleToFit);
+            GUI.color = previousColor;
+        }
+
+        private static Color GetStatusColor(StatusIndicatorKind kind)
+        {
+            switch (kind)
+            {
+                case StatusIndicatorKind.Configured: return new Color(0.35f, 0.85f, 0.35f);
+                case StatusIndicatorKind.Warning: return new Color(1.00f, 0.72f, 0.15f);
+                case StatusIndicatorKind.Error: return Color.red;
+                default: return new Color(0.55f, 0.55f, 0.55f);
+            }
+        }
+
+        private static GUIStyle GetWrappedLabelStyle()
+        {
+            if (wrappedLabelStyle == null)
+            {
+                wrappedLabelStyle = new GUIStyle(EditorStyles.label)
+                {
+                    wordWrap = true
+                };
+            }
+
+            return wrappedLabelStyle;
+        }
+
+        private void OnClientSelected(int selectedIndex)
+        {
+            if (selectedIndex < 0 || selectedIndex >= configurators.Count)
+            {
+                return;
+            }
+
+            selectedClientIndex = selectedIndex;
+            // Persist the selected client so it's restored on next window open
+            if (selectedClientIndex >= 0 && selectedClientIndex < configurators.Count)
+            {
+                EditorPrefs.SetString(EditorPrefKeys.LastSelectedClientId, configurators[selectedClientIndex].Id);
+            }
+            UpdateClientStatus();
+            UpdateManualConfiguration();
+            UpdateClaudeCliPathVisibility();
+            UpdateClientProjectDirVisibility();
+            UpdateInstallSkillsVisibility();
         }
 
         public void UpdateClientStatus()
@@ -225,20 +310,20 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
             var client = configurators[selectedClientIndex];
 
             string configPath = client.GetConfigPath();
-            configPathField.value = configPath;
+            configPathText = configPath;
 
             string configJson = client.GetManualSnippet();
-            configJsonField.value = configJson;
+            configJsonText = configJson;
 
             var steps = client.GetInstallationSteps();
             if (steps != null && steps.Count > 0)
             {
                 var numbered = steps.Select((s, i) => $"{i + 1}. {s}");
-                installationStepsLabel.text = string.Join("\n", numbered);
+                installationStepsText = string.Join("\n", numbered);
             }
             else
             {
-                installationStepsLabel.text = "Configuration steps not available for this client.";
+                installationStepsText = "Configuration steps not available for this client.";
             }
         }
 
@@ -251,21 +336,20 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
 
             if (client is ClaudeCliMcpConfigurator)
             {
+                claudeCliPathVisible = true;
                 string claudePath = MCPServiceLocator.Paths.GetClaudeCliPath();
                 if (string.IsNullOrEmpty(claudePath))
                 {
-                    claudeCliPathRow.style.display = DisplayStyle.Flex;
-                    claudeCliPath.value = "Not found - click Browse to select";
+                    claudeCliPathText = "Not found - click Browse to select";
                 }
                 else
                 {
-                    claudeCliPathRow.style.display = DisplayStyle.Flex;
-                    claudeCliPath.value = claudePath;
+                    claudeCliPathText = claudePath;
                 }
             }
             else
             {
-                claudeCliPathRow.style.display = DisplayStyle.None;
+                claudeCliPathVisible = false;
             }
         }
 
@@ -278,20 +362,20 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
 
             if (client is ClaudeCliMcpConfigurator)
             {
-                clientProjectDirRow.style.display = DisplayStyle.Flex;
+                clientProjectDirVisible = true;
                 string projectDir = ClaudeCliMcpConfigurator.GetClientProjectDir();
                 if (ClaudeCliMcpConfigurator.HasClientProjectDirOverride)
                 {
-                    clientProjectDirField.value = projectDir + "  (override)";
+                    clientProjectDirText = projectDir + "  (override)";
                 }
                 else
                 {
-                    clientProjectDirField.value = projectDir;
+                    clientProjectDirText = projectDir;
                 }
             }
             else
             {
-                clientProjectDirRow.style.display = DisplayStyle.None;
+                clientProjectDirVisible = false;
             }
         }
 
@@ -365,8 +449,8 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
             }
             catch (Exception ex)
             {
-                clientStatusLabel.text = "Error";
-                clientStatusLabel.style.color = Color.red;
+                clientStatusText = "Error";
+                statusIndicatorKind = StatusIndicatorKind.Error;
                 McpLog.Error($"Configuration failed: {ex.Message}");
                 EditorUtility.DisplayDialog("Configuration Failed", ex.Message, "OK");
             }
@@ -464,14 +548,9 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
 
         private void UpdateInstallSkillsVisibility()
         {
-            if (installSkillsButton == null)
-                return;
-
-            bool visible = selectedClientIndex >= 0
-                           && selectedClientIndex < configurators.Count
-                           && configurators[selectedClientIndex].SupportsSkills;
-
-            installSkillsButton.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+            installSkillsVisible = selectedClientIndex >= 0
+                                   && selectedClientIndex < configurators.Count
+                                   && configurators[selectedClientIndex].SupportsSkills;
         }
 
         private void OnInstallSkillsClicked()
@@ -493,14 +572,14 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
             string branch = AssetPathUtility.IsPreReleaseVersion() ? "beta" : "main";
 
             isSkillSyncInProgress = true;
-            installSkillsButton.SetEnabled(false);
-            installSkillsButton.text = "Syncing...";
+            installSkillsEnabled = false;
+            installSkillsText = "Syncing...";
 
             SkillSyncService.SyncAsync(installPath, branch, null, result =>
                 {
                     isSkillSyncInProgress = false;
-                    installSkillsButton.SetEnabled(true);
-                    installSkillsButton.text = "Install Skills";
+                    installSkillsEnabled = true;
+                    installSkillsText = "Install Skills";
 
                     if (result.Success)
                     {
@@ -570,13 +649,13 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
 
         private void OnCopyPathClicked()
         {
-            EditorGUIUtility.systemCopyBuffer = configPathField.value;
+            EditorGUIUtility.systemCopyBuffer = configPathText;
             McpLog.Info("Config path copied to clipboard");
         }
 
         private void OnOpenFileClicked()
         {
-            string path = configPathField.value;
+            string path = configPathText;
             try
             {
                 if (!File.Exists(path))
@@ -599,7 +678,7 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
 
         private void OnCopyJsonClicked()
         {
-            EditorGUIUtility.systemCopyBuffer = configJsonField.value;
+            EditorGUIUtility.systemCopyBuffer = configJsonText;
             McpLog.Info("Configuration copied to clipboard");
         }
 
@@ -718,16 +797,11 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
             if (!ReferenceEquals(configurators[selectedClientIndex], client))
                 return;
 
-            clientStatusIndicator.RemoveFromClassList("configured");
-            clientStatusIndicator.RemoveFromClassList("not-configured");
-            clientStatusIndicator.RemoveFromClassList("warning");
-
             if (showChecking)
             {
-                clientStatusLabel.text = customMessage ?? "Checking...";
-                clientStatusLabel.style.color = StyleKeyword.Null;
-                clientStatusIndicator.AddToClassList("warning");
-                configureButton.text = client.GetConfigureActionLabel();
+                clientStatusText = customMessage ?? "Checking...";
+                statusIndicatorKind = StatusIndicatorKind.Warning;
+                configureButtonText = client.GetConfigureActionLabel();
                 return;
             }
 
@@ -745,35 +819,34 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
             // If configured but with transport mismatch, show warning state
             if (hasTransportMismatch && (client.Status == McpStatus.Configured || client.Status == McpStatus.Running || client.Status == McpStatus.Connected))
             {
-                clientStatusLabel.text = "Transport Mismatch";
-                clientStatusIndicator.AddToClassList("warning");
+                clientStatusText = "Transport Mismatch";
+                statusIndicatorKind = StatusIndicatorKind.Warning;
             }
             else
             {
-                clientStatusLabel.text = GetStatusDisplayString(client.Status);
+                clientStatusText = GetStatusDisplayString(client.Status);
 
                 switch (client.Status)
                 {
                     case McpStatus.Configured:
                     case McpStatus.Running:
                     case McpStatus.Connected:
-                        clientStatusIndicator.AddToClassList("configured");
+                        statusIndicatorKind = StatusIndicatorKind.Configured;
                         break;
                     case McpStatus.IncorrectPath:
                     case McpStatus.CommunicationError:
                     case McpStatus.NoResponse:
                     case McpStatus.Error:
                     case McpStatus.VersionMismatch:
-                        clientStatusIndicator.AddToClassList("warning");
+                        statusIndicatorKind = StatusIndicatorKind.Warning;
                         break;
                     default:
-                        clientStatusIndicator.AddToClassList("not-configured");
+                        statusIndicatorKind = StatusIndicatorKind.NotConfigured;
                         break;
                 }
             }
 
-            clientStatusLabel.style.color = StyleKeyword.Null;
-            configureButton.text = client.GetConfigureActionLabel();
+            configureButtonText = client.GetConfigureActionLabel();
 
             // Notify listeners about the client's configured transport
             OnClientTransportDetected?.Invoke(client.DisplayName, client.ConfiguredTransport);
@@ -826,28 +899,6 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
                 {
                     return i;
                 }
-            }
-
-            return -1;
-        }
-
-        private int GetIndexForDropdownValue(string dropdownValue)
-        {
-            if (string.IsNullOrWhiteSpace(dropdownValue))
-                return -1;
-
-            int directIndex = clientDropdown.choices?.IndexOf(dropdownValue) ?? -1;
-            if (directIndex >= 0 && directIndex < configurators.Count)
-                return directIndex;
-
-            string normalized = NormalizeClientToken(dropdownValue);
-            if (string.IsNullOrEmpty(normalized))
-                return -1;
-
-            for (int i = 0; i < configurators.Count; i++)
-            {
-                if (NormalizeClientToken(configurators[i].DisplayName) == normalized)
-                    return i;
             }
 
             return -1;

@@ -7,8 +7,8 @@ using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Security;
 using MCPForUnity.Editor.Services.AssetGen;
 using MCPForUnity.Editor.Services.AssetGen.Import;
+using UnityEditor;
 using UnityEngine;
-using UnityEngine.UIElements;
 
 namespace MCPForUnity.Editor.Windows.Components.AssetGen
 {
@@ -23,6 +23,10 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
     /// Keys are written to the OS secure store (<see cref="SecureKeyStore"/>), never to
     /// EditorPrefs or the project. The stored key is never read back into the field; only
     /// its presence is surfaced through the status label.
+    ///
+    /// IMGUI implementation: the window calls <see cref="Draw"/> each OnGUI while this tab is
+    /// active. All state lives in plain fields (never in controls), so catalog refreshes can
+    /// never replace or clear an in-progress API-key input.
     /// </summary>
     public class McpAssetGenSection
     {
@@ -47,127 +51,152 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             ("openrouter", "OpenRouter"),
         };
 
-        // UI Elements
-        private VisualElement providersContainer;
-        private VisualElement gltfastNotice;
-        private DropdownField formatDropdown;
-        private TextField outputRootField;
-        private Toggle autoNormalizeToggle;
-        private Button refreshButton;
-        private Label refreshStatusLabel;
+        private const string KeyControlPrefix = "assetgen-key-";
+        private const string OutputRootControl = "assetgen-output-root";
+        private const double AutoRefreshIntervalSeconds = 60.0;
+
+        private static readonly GUIStyle BoldLabelStyle = new GUIStyle(EditorStyles.label) { fontStyle = FontStyle.Bold };
+        private static readonly GUIStyle OkHelpStyle = MakeHelpStyle(new Color(0.4f, 0.8f, 0.4f));
+        private static readonly GUIStyle DimHelpStyle = MakeHelpStyle(new Color(0.7f, 0.7f, 0.7f));
+        private static readonly GUIStyle WarnHelpStyle = MakeHelpStyle(new Color(0.85f, 0.45f, 0.1f));
+        private static GUIStyle placeholderStyle;
+
         private McpBlenderBridgePanel blenderPanel;
 
-        // Per-provider enable toggles for the GLB-capable (model) providers, used to
-        // recompute the glTFast notice when a toggle changes.
-        private readonly List<(string Id, Toggle Toggle)> modelEnableToggles = new List<(string Id, Toggle Toggle)>();
-        private readonly List<(VisualElement Container, string Kind, string Provider)> modelControls = new List<(VisualElement Container, string Kind, string Provider)>();
         private readonly Dictionary<string, string> searches = new Dictionary<string, string>();
         // Last failed compatibility check per kind/provider, kept so a catalog rebuild cannot hide it.
         private readonly Dictionary<string, (string Id, string Error)> verifyErrors = new Dictionary<string, (string Id, string Error)>();
+        // Verified ModelEntry per kind/provider from the latest successful compatibility check.
+        private readonly Dictionary<string, ModelEntry> verifiedResults = new Dictionary<string, ModelEntry>();
+        // kind/provider keys with a compatibility check in flight (meta shows "Checking compatibility…").
+        private readonly HashSet<string> pendingVerify = new HashSet<string>();
+        // Typed-but-unsaved API keys per provider id; cleared after a successful save.
+        private readonly Dictionary<string, string> keyEdits = new Dictionary<string, string>();
+        // Transient per-provider status lines set by Save/Clear/Test; missing entries fall back to
+        // secure-store presence, exactly like the freshly built rows of the Toolkit original.
+        private readonly Dictionary<string, (string Text, bool Ok)> statusOverrides = new Dictionary<string, (string Text, bool Ok)>();
 
-        public VisualElement Root { get; private set; }
+        private string outputRootEdit = string.Empty;
+        private bool showGltfastNotice;
+        private string refreshStatusText = string.Empty;
+        private bool refreshStatusOk = true;
+        private bool catalogChecking;
+        private string lastFocusedControl = string.Empty;
 
-        public McpAssetGenSection(VisualElement root)
+        // 60-second automatic catalog refresh, polled from EditorApplication.update; the hook
+        // unhooks itself once the host window is gone, so nothing is left registered permanently.
+        private bool autoRefreshHooked;
+        private double nextAutoRefreshAt;
+
+        // Deferred SyncFromPrefs: a one-shot temporary EditorApplication.update callback.
+        private bool syncQueued;
+        private EditorApplication.CallbackFunction syncHandler;
+
+        public McpAssetGenSection()
         {
-            Root = root;
-            CacheUIElements();
-            InitializeUI();
-            RegisterCallbacks();
-            Root.RegisterCallback<AttachToPanelEvent>(_ =>
-            {
-                SubscribeCatalogs();
-                // Catch up on catalog changes that fired while the tab was detached.
-                RebuildModelControls(null, null);
-            });
-            Root.RegisterCallback<DetachFromPanelEvent>(_ => { FalModelCatalog.Changed -= OnFalChanged; OpenRouterModelCatalog.Changed -= OnRouterChanged; });
-            if (Root.panel != null) SubscribeCatalogs();
-            Root.schedule.Execute(() => { if (!modelControls.Any(c => FalModelCatalog.IsRefreshing(c.Kind)) && !OpenRouterModelCatalog.IsRefreshing) _ = RefreshCatalog(false); }).Every(60000);
+            blenderPanel = new McpBlenderBridgePanel();
+            SyncFromPrefs();
+            EnsureAutoRefreshHooked();
             _ = RefreshCatalog(false);
         }
 
-        private void SubscribeCatalogs()
+        /// <summary>
+        /// Draws the whole Asset Generation tab with IMGUI, in McpAssetGenSection.uxml order.
+        /// Called by the host window while this tab is the active one.
+        /// </summary>
+        public void Draw()
         {
-            FalModelCatalog.Changed -= OnFalChanged;
-            FalModelCatalog.Changed += OnFalChanged;
-            OpenRouterModelCatalog.Changed -= OnRouterChanged;
-            OpenRouterModelCatalog.Changed += OnRouterChanged;
-        }
+            CommitFocusLostEdits();
 
-        private void OnFalChanged(string kind) => RebuildModelControls(kind, "fal");
+            EditorGUILayout.LabelField("AI Asset Generation", BoldLabelStyle);
+            EditorGUILayout.LabelField(
+                "Enter your own provider API keys. Generation is triggered via MCP tools / CLI, not here. " +
+                "Keys are stored in your OS secure store (Keychain / Credential Manager / libsecret), never in the project.",
+                EditorStyles.wordWrappedMiniLabel);
 
-        private void OnRouterChanged() => RebuildModelControls("image", "openrouter");
-
-        private void CacheUIElements()
-        {
-            providersContainer = Root.Q<VisualElement>("assetgen-providers-container");
-            gltfastNotice = Root.Q<VisualElement>("gltfast-notice");
-            formatDropdown = Root.Q<DropdownField>("assetgen-format-dropdown");
-            outputRootField = Root.Q<TextField>("assetgen-output-root");
-            autoNormalizeToggle = Root.Q<Toggle>("assetgen-auto-normalize");
-            refreshButton = Root.Q<Button>("assetgen-refresh");
-            refreshStatusLabel = Root.Q<Label>("assetgen-refresh-status");
-
-            var blenderRoot = Root.Q<VisualElement>("blender-bridge-panel");
-            if (blenderRoot != null) blenderPanel = new McpBlenderBridgePanel(blenderRoot);
-        }
-
-        private void InitializeUI()
-        {
-            // One-time choices + tooltips; the field values are populated by SyncFromPrefs.
-            if (formatDropdown != null)
+            if (showGltfastNotice)
             {
-                formatDropdown.choices = new List<string> { "glb", "fbx", "obj" };
-                formatDropdown.tooltip = "Default container format for generated 3D models.";
+                EditorGUILayout.HelpBox("GLB import needs the glTFast package — install it from the Dependencies tab.", MessageType.Warning);
             }
 
-            if (outputRootField != null)
+            EditorGUILayout.BeginHorizontal();
+            using (new EditorGUI.DisabledScope(catalogChecking))
             {
-                outputRootField.tooltip =
-                    $"Project-relative folder where generated assets are written. Empty = {AssetGenPrefs.DefaultOutputRoot}.";
-            }
-
-            if (autoNormalizeToggle != null)
-            {
-                autoNormalizeToggle.tooltip = "Uniformly scale imported models to the target size on import.";
-            }
-
-            SyncFromPrefs();
-        }
-
-        private void RegisterCallbacks()
-        {
-            if (formatDropdown != null)
-            {
-                formatDropdown.RegisterValueChangedCallback(evt =>
+                if (GUILayout.Button(new GUIContent("Refresh", "Refresh fal image, sound and 3D models, and OpenRouter images."),
+                    EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
                 {
-                    AssetGenPrefs.DefaultFormat = evt.newValue;
-                });
+                    OnRefreshClicked();
+                }
             }
+            EditorGUILayout.LabelField(new GUIContent(refreshStatusText), refreshStatusOk ? OkHelpStyle : DimHelpStyle, GUILayout.MinWidth(0));
+            EditorGUILayout.EndHorizontal();
 
-            if (outputRootField != null)
+            GUILayout.Space(4);
+
+            EditorGUILayout.BeginVertical(GUI.skin.box);
+            EditorGUILayout.LabelField("3D Models", BoldLabelStyle);
+            foreach (var provider in ModelProviders)
             {
-                outputRootField.RegisterCallback<FocusOutEvent>(_ =>
+                if (provider.Id == "fal")
                 {
-                    AssetGenPrefs.OutputRoot = outputRootField.text?.Trim();
-                    // Reflect the normalized/default value (empty -> default) without re-triggering.
-                    outputRootField.SetValueWithoutNotify(AssetGenPrefs.OutputRoot);
-                });
-            }
-
-            if (autoNormalizeToggle != null)
-            {
-                autoNormalizeToggle.RegisterValueChangedCallback(evt =>
+                    // No toggle of its own: the glTFast notice reads the 2D fal row's enable pref.
+                    DrawSharedFalRow("model", provider.Label);
+                }
+                else
                 {
-                    AssetGenPrefs.AutoNormalize = evt.newValue;
-                });
+                    DrawProviderRow(provider.Id, provider.Label, "model");
+                }
+            }
+            EditorGUILayout.EndVertical();
+
+            EditorGUILayout.BeginVertical(GUI.skin.box);
+            EditorGUILayout.LabelField("2D Images", BoldLabelStyle);
+            foreach (var provider in ImageProviders)
+            {
+                DrawProviderRow(provider.Id, provider.Label, "image");
+            }
+            EditorGUILayout.EndVertical();
+
+            EditorGUILayout.BeginVertical(GUI.skin.box);
+            EditorGUILayout.LabelField("Sound (fal.ai)", BoldLabelStyle);
+            DrawSharedFalRow("audio", "fal (audio)");
+            EditorGUILayout.EndVertical();
+
+            if (blenderPanel != null)
+            {
+                blenderPanel.Draw();
             }
 
-            if (refreshButton != null)
+            GUILayout.Space(4);
+            EditorGUILayout.LabelField("Preferences", BoldLabelStyle);
+
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("Default 3D Format:", GUILayout.ExpandWidth(false));
+            string[] formatChoices = { "glb", "fbx", "obj" };
+            int formatIndex = Array.IndexOf(formatChoices, NormalizeFormat(AssetGenPrefs.DefaultFormat));
+            if (formatIndex < 0) formatIndex = 0;
+            int newFormatIndex = EditorGUILayout.Popup(formatIndex, formatChoices);
+            if (newFormatIndex != formatIndex)
             {
-                refreshButton.tooltip =
-                    "Refresh fal image, sound and 3D models, and OpenRouter images.";
-                refreshButton.clicked += OnRefreshClicked;
+                AssetGenPrefs.DefaultFormat = formatChoices[newFormatIndex];
             }
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.LabelField("Output Root:", GUILayout.ExpandWidth(false));
+            outputRootEdit = DrawTextFieldWithPlaceholder(outputRootEdit, "Assets/Generated", OutputRootControl,
+                $"Project-relative folder where generated assets are written. Empty = {AssetGenPrefs.DefaultOutputRoot}.",
+                GUILayout.ExpandWidth(true));
+
+            EditorGUILayout.BeginHorizontal();
+            bool autoNormalize = AssetGenPrefs.AutoNormalize;
+            bool newAutoNormalize = EditorGUILayout.Toggle(
+                new GUIContent("Auto-Normalize Imported Models:", "Uniformly scale imported models to the target size on import."),
+                autoNormalize);
+            if (newAutoNormalize != autoNormalize)
+            {
+                AssetGenPrefs.AutoNormalize = newAutoNormalize;
+            }
+            EditorGUILayout.EndHorizontal();
         }
 
         /// <summary>
@@ -180,295 +209,251 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
         }
 
         /// <summary>
-        /// Re-reads secure-store presence and prefs and rebuilds the rows. Called when the
+        /// Re-reads secure-store presence and prefs and redraws. Called when the
         /// tab becomes visible so keys set elsewhere (e.g. via CLI) are reflected.
         /// </summary>
         public void Refresh()
         {
             SyncFromPrefs();
-            blenderPanel?.Refresh();
+            if (blenderPanel != null) blenderPanel.Refresh();
             _ = RefreshCatalog(false);
         }
 
         private async Task RefreshCatalog(bool force)
         {
-            refreshButton?.SetEnabled(false);
-            if (refreshStatusLabel != null) SetStatus(refreshStatusLabel, "Checking model catalogs…", true);
+            catalogChecking = true;
+            refreshStatusText = "Checking model catalogs…";
+            refreshStatusOk = true;
             try
             {
-                // A committed refresh raises Changed, which rebuilds only the affected model controls;
-                // unchanged catalogs leave the rows (and any unsaved API-key input) alone.
+                // Unchanged catalogs leave any unsaved API-key input alone: nothing here touches
+                // the key edit buffers.
                 await Task.WhenAll(FalModelCatalog.RefreshAsync("image", force), FalModelCatalog.RefreshAsync("audio", force),
                     FalModelCatalog.RefreshAsync("model", force), OpenRouterModelCatalog.RefreshAsync(force));
                 string error = FalModelCatalog.LastError("image") ?? FalModelCatalog.LastError("audio") ?? FalModelCatalog.LastError("model") ?? OpenRouterModelCatalog.LastError;
                 string verified = FalModelCatalog.VerifiedAt("audio") ?? FalModelCatalog.VerifiedAt("image");
                 string when = DateTime.TryParse(verified, out var time) ? time.ToLocalTime().ToString("g") : "unknown";
-                string label = error != null ? error : "Catalogs checked " + when + " · refreshed automatically every 24 hours";
-                if (refreshStatusLabel != null) SetStatus(refreshStatusLabel, label, error == null);
+                refreshStatusText = error != null ? error : "Catalogs checked " + when + " · refreshed automatically every 24 hours";
+                refreshStatusOk = error == null;
             }
-            finally { refreshButton?.SetEnabled(true); }
-        }
-
-        /// <summary>Rebuilds live-catalog model controls; a null kind or provider matches all.</summary>
-        private void RebuildModelControls(string kind, string provider)
-        {
-            foreach (var control in modelControls.ToArray())
+            finally
             {
-                if (control.Provider != "fal" && control.Provider != "openrouter") continue;
-                if (kind != null && control.Kind != kind || provider != null && control.Provider != provider) continue;
-                control.Container.Clear();
-                PopulateModelDropdown(control.Container, control.Kind, control.Provider);
+                catalogChecking = false;
             }
         }
 
-        /// <summary>Rebuild the provider rows and reflect current prefs into the fields.</summary>
-        private void SyncFromPrefs()
+        private void EnsureAutoRefreshHooked()
         {
-            BuildProviderRows();
-            formatDropdown?.SetValueWithoutNotify(NormalizeFormat(AssetGenPrefs.DefaultFormat));
-            outputRootField?.SetValueWithoutNotify(AssetGenPrefs.OutputRoot);
-            autoNormalizeToggle?.SetValueWithoutNotify(AssetGenPrefs.AutoNormalize);
-            UpdateGltfastNotice();
+            if (autoRefreshHooked) return;
+            autoRefreshHooked = true;
+            nextAutoRefreshAt = EditorApplication.timeSinceStartup + AutoRefreshIntervalSeconds;
+            EditorApplication.update += AutoRefreshTick;
         }
 
-        private void BuildProviderRows()
+        /// <summary>
+        /// EditorApplication.update poll for the 60-second automatic catalog refresh.
+        /// Same guard as the original: never fires while a catalog refresh is already running.
+        /// Once the host window is closed, the hook removes itself so nothing stays registered.
+        /// </summary>
+        private void AutoRefreshTick()
         {
-            if (providersContainer == null)
+            if (EditorApplication.timeSinceStartup < nextAutoRefreshAt) return;
+            nextAutoRefreshAt = EditorApplication.timeSinceStartup + AutoRefreshIntervalSeconds;
+
+            if (Resources.FindObjectsOfTypeAll<MCPForUnityEditorWindow>().Length == 0)
             {
+                EditorApplication.update -= AutoRefreshTick;
+                autoRefreshHooked = false;
                 return;
             }
 
-            providersContainer.Clear();
-            modelEnableToggles.Clear();
-            modelControls.Clear();
-
-            var modelPanel = AddCategoryPanel("3D Models");
-            foreach (var provider in ModelProviders)
+            if (FalModelCatalog.IsRefreshing("image") || FalModelCatalog.IsRefreshing("audio")
+                || FalModelCatalog.IsRefreshing("model") || OpenRouterModelCatalog.IsRefreshing)
             {
-                if (provider.Id == "fal")
-                {
-                    AddSharedFalRow(modelPanel, "model", provider.Label);
-                    // No toggle of its own: the glTFast notice reads the 2D fal row's enable pref.
-                    modelEnableToggles.Add((provider.Id, null));
-                    continue;
-                }
-                var toggle = AddProviderRow(modelPanel, provider.Id, provider.Label, "model");
-                modelEnableToggles.Add((provider.Id, toggle));
+                return;
             }
-
-            var imagePanel = AddCategoryPanel("2D Images");
-            foreach (var provider in ImageProviders)
-            {
-                AddProviderRow(imagePanel, provider.Id, provider.Label, "image");
-            }
-
-            var audioPanel = AddCategoryPanel("Sound (fal.ai)");
-            AddSharedFalRow(audioPanel, "audio", "fal (audio)");
+            _ = RefreshCatalog(false);
         }
 
         /// <summary>
-        /// Creates a darker rounded panel with a title (added to the providers container). Each of the
-        /// three categories (3D / 2D / sound) gets its own panel so they read as distinct blocks.
+        /// Commits an output-root or API-key edit the moment its control loses keyboard focus —
+        /// the IMGUI equivalent of the original FocusOutEvent callbacks.
         /// </summary>
-        private VisualElement AddCategoryPanel(string title)
+        private void CommitFocusLostEdits()
         {
-            var panel = new VisualElement();
-            panel.style.backgroundColor = new Color(0f, 0f, 0f, 0.20f);
-            panel.style.paddingTop = 8;
-            panel.style.paddingBottom = 8;
-            panel.style.paddingLeft = 8;
-            panel.style.paddingRight = 8;
-            panel.style.marginBottom = 10;
-            panel.style.borderTopLeftRadius = 4;
-            panel.style.borderTopRightRadius = 4;
-            panel.style.borderBottomLeftRadius = 4;
-            panel.style.borderBottomRightRadius = 4;
+            string focused = GUI.GetNameOfFocusedControl();
+            if (focused == lastFocusedControl) return;
 
-            var label = new Label(title);
-            label.AddToClassList("config-label");
-            label.style.marginTop = 0;
-            panel.Add(label);
-
-            providersContainer.Add(panel);
-            return panel;
+            if (lastFocusedControl == OutputRootControl)
+            {
+                CommitOutputRoot();
+            }
+            else if (lastFocusedControl != null && lastFocusedControl.StartsWith(KeyControlPrefix, StringComparison.Ordinal))
+            {
+                SaveKeyFromField(lastFocusedControl.Substring(KeyControlPrefix.Length));
+            }
+            lastFocusedControl = focused;
         }
 
-        private Toggle AddProviderRow(VisualElement parent, string id, string displayName, string kind)
+        /// <summary>Re-reads prefs into the transient fields; rows are drawn from live state.</summary>
+        private void SyncFromPrefs()
         {
-            var row = new VisualElement();
-            row.style.marginBottom = 8;
-            row.style.paddingBottom = 8;
-            row.style.borderBottomWidth = 1;
-            row.style.borderBottomColor = new Color(0.3f, 0.3f, 0.3f, 0.3f);
+            outputRootEdit = AssetGenPrefs.OutputRoot;
+            statusOverrides.Clear();
+            UpdateGltfastNotice();
+        }
 
-            var statusLabel = new Label();
-            statusLabel.AddToClassList("help-text");
+        private void CommitOutputRoot()
+        {
+            AssetGenPrefs.OutputRoot = outputRootEdit != null ? outputRootEdit.Trim() : null;
+            // Reflect the normalized/default value (empty -> default) without re-triggering.
+            outputRootEdit = AssetGenPrefs.OutputRoot;
+        }
+
+        private void DrawProviderRow(string id, string displayName, string kind)
+        {
+            EditorGUILayout.BeginVertical();
 
             // Header: bold provider name, key status inline to its right, enable toggle far right.
-            var header = new VisualElement();
-            header.style.flexDirection = FlexDirection.Row;
-            header.style.alignItems = Align.Center;
-            header.style.marginBottom = 2;
-
-            var nameLabel = new Label(displayName);
-            nameLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-            nameLabel.style.flexShrink = 0;
-            header.Add(nameLabel);
-
-            statusLabel.style.flexGrow = 1;
-            statusLabel.style.marginLeft = 8;
-            header.Add(statusLabel);
-
-            var enableToggle = new Toggle("Enabled");
-            enableToggle.SetValueWithoutNotify(AssetGenPrefs.IsProviderEnabled(id));
-            enableToggle.tooltip = $"Enable the {displayName} provider for asset generation.";
-            header.Add(enableToggle);
-
-            row.Add(header);
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField(displayName, BoldLabelStyle, GUILayout.ExpandWidth(false));
+            DrawKeyStatus(id);
+            bool enabled = AssetGenPrefs.IsProviderEnabled(id);
+            bool newEnabled = EditorGUILayout.Toggle(
+                new GUIContent("Enabled", $"Enable the {displayName} provider for asset generation."), enabled);
+            if (newEnabled != enabled)
+            {
+                AssetGenPrefs.SetProviderEnabled(id, newEnabled);
+                UpdateGltfastNotice();
+            }
+            EditorGUILayout.EndHorizontal();
 
             // Masked key field + Save / Clear / Test buttons.
-            var fieldRow = new VisualElement();
-            fieldRow.style.flexDirection = FlexDirection.Row;
-            fieldRow.style.alignItems = Align.Center;
-
-            var keyField = new TextField();
-            keyField.isPasswordField = true;
-            keyField.maskChar = '*';
-            keyField.style.flexGrow = 1;
-            keyField.style.flexShrink = 1;
-            keyField.style.marginRight = 4;
-            keyField.tooltip =
+            EditorGUILayout.BeginHorizontal();
+            string edit = keyEdits.TryGetValue(id, out string buffered) ? buffered : string.Empty;
+            GUI.SetNextControlName(KeyControlPrefix + id);
+            edit = EditorGUILayout.PasswordField(new GUIContent(edit,
                 $"Paste your {displayName} API key, then press Save (or click away). " +
-                "The key is stored in your OS secure store and is never read back into this field.";
-            fieldRow.Add(keyField);
-
-            var saveButton = new Button { text = "Save" };
-            saveButton.AddToClassList("icon-button");
-            fieldRow.Add(saveButton);
-
-            var clearButton = new Button { text = "Clear" };
-            clearButton.AddToClassList("icon-button");
-            fieldRow.Add(clearButton);
-
-            var testButton = new Button { text = "Test" };
-            testButton.AddToClassList("icon-button");
-            fieldRow.Add(testButton);
-
-            row.Add(fieldRow);
-
-            // Persist the typed key, then clear the field so the secret is never displayed.
-            void SaveKeyFromField()
+                "The key is stored in your OS secure store and is never read back into this field."),
+                GUILayout.ExpandWidth(true));
+            keyEdits[id] = edit;
+            if (GUILayout.Button("Save", EditorStyles.miniButton))
             {
-                string text = keyField.text?.Trim();
-                if (string.IsNullOrEmpty(text))
-                {
-                    return;
-                }
-
-                try
-                {
-                    SecureKeyStore.Current.Set(id, text);
-                    keyField.SetValueWithoutNotify(string.Empty);
-                    SetStatus(statusLabel, "saved ✓", true);
-                    RebuildIfSharedKey(id);
-                }
-                catch (Exception ex)
-                {
-                    McpLog.Warn($"Failed to store {id} key: {ex.Message}");
-                    SetStatus(statusLabel, "save failed", false);
-                }
+                SaveKeyFromField(id);
             }
-
-            keyField.RegisterCallback<FocusOutEvent>(_ => SaveKeyFromField());
-            saveButton.clicked += SaveKeyFromField;
-
-            clearButton.clicked += () =>
+            if (GUILayout.Button("Clear", EditorStyles.miniButton))
             {
-                try
-                {
-                    SecureKeyStore.Current.Delete(id);
-                }
-                catch (Exception ex)
-                {
-                    McpLog.Warn($"Failed to delete {id} key: {ex.Message}");
-                }
-
-                keyField.SetValueWithoutNotify(string.Empty);
-                SetStatus(statusLabel, "not set", false);
-                RebuildIfSharedKey(id);
-            };
-
-            // v1 surfaces presence only. Live endpoint validation (an actual auth ping to the
-            // provider) is a future enhancement and intentionally not performed here.
-            testButton.clicked += () =>
+                ClearKey(id);
+            }
+            if (GUILayout.Button("Test", EditorStyles.miniButton))
             {
-                bool present = HasKey(id);
-                SetStatus(statusLabel, present ? "key present ✓" : "no key set", present);
-            };
-
-            enableToggle.RegisterValueChangedCallback(evt =>
-            {
-                AssetGenPrefs.SetProviderEnabled(id, evt.newValue);
-                UpdateGltfastNotice();
-            });
-
-            // Initial status reflects secure-store presence (existence only; never the value).
-            bool has = HasKey(id);
-            SetStatus(statusLabel, has ? "saved ✓" : "not set", has);
+                TestKey(id);
+            }
+            EditorGUILayout.EndHorizontal();
 
             // "Which model" selector for this provider (skipped for providers with no catalog
             // models, e.g. the Sketchfab marketplace).
-            AddModelDropdown(row, kind, id);
+            DrawModelDropdown(kind, id);
 
-            parent.Add(row);
-            return enableToggle;
+            GUILayout.Space(6);
+            EditorGUILayout.EndVertical();
+        }
+
+        private void DrawKeyStatus(string id)
+        {
+            string text;
+            bool ok;
+            if (statusOverrides.TryGetValue(id, out (string Text, bool Ok) status))
+            {
+                text = status.Text;
+                ok = status.Ok;
+            }
+            else
+            {
+                // Initial status reflects secure-store presence (existence only; never the value).
+                bool has = HasKey(id);
+                text = has ? "saved ✓" : "not set";
+                ok = has;
+            }
+            EditorGUILayout.LabelField(text, ok ? OkHelpStyle : DimHelpStyle, GUILayout.MinWidth(0));
+        }
+
+        /// <summary>Persists the typed key, then clears the field so the secret is never displayed.</summary>
+        private void SaveKeyFromField(string id)
+        {
+            string buffered;
+            if (!keyEdits.TryGetValue(id, out buffered)) return;
+            string text = buffered != null ? buffered.Trim() : null;
+            if (string.IsNullOrEmpty(text)) return;
+
+            try
+            {
+                SecureKeyStore.Current.Set(id, text);
+                keyEdits[id] = string.Empty;
+                statusOverrides[id] = ("saved ✓", true);
+                RebuildIfSharedKey(id);
+            }
+            catch (Exception ex)
+            {
+                McpLog.Warn($"Failed to store {id} key: {ex.Message}");
+                statusOverrides[id] = ("save failed", false);
+            }
+        }
+
+        private void ClearKey(string id)
+        {
+            try
+            {
+                SecureKeyStore.Current.Delete(id);
+            }
+            catch (Exception ex)
+            {
+                McpLog.Warn($"Failed to delete {id} key: {ex.Message}");
+            }
+
+            keyEdits[id] = string.Empty;
+            statusOverrides[id] = ("not set", false);
+            RebuildIfSharedKey(id);
+        }
+
+        // v1 surfaces presence only. Live endpoint validation (an actual auth ping to the
+        // provider) is a future enhancement and intentionally not performed here.
+        private void TestKey(string id)
+        {
+            bool present = HasKey(id);
+            statusOverrides[id] = (present ? "key present ✓" : "no key set", present);
         }
 
         /// <summary>
-        /// Adds a "Model" dropdown + metadata line for a (kind, provider) pair, if the catalog has
+        /// Draws a "Model" dropdown + metadata lines for a (kind, provider) pair, if the catalog has
         /// any models for it. The dropdown shows friendly labels; the pref stores the model id.
         /// Selecting a model becomes the default that generate_* uses when no explicit model is passed.
         /// </summary>
-        private void AddModelDropdown(VisualElement parent, string kind, string providerId)
+        private void DrawModelDropdown(string kind, string providerId)
         {
             bool live = providerId == "fal" || providerId == "openrouter";
             // Bundled-only providers with no models (the Sketchfab marketplace) get no selector at all.
             if (!live && AssetGenModelCatalog.ForProvider(providerId, kind).Count == 0) return;
+
+            string key = kind + "/" + providerId;
+            string term = searches.TryGetValue(key, out string stored) ? stored : "";
+
             if (live)
             {
-                // Same .setting-row / .setting-label layout as the Model row below, so both align.
-                var searchRow = new VisualElement();
-                searchRow.AddToClassList("setting-row");
-                var searchLabel = new Label("Search");
-                searchLabel.AddToClassList("setting-label");
-                searchRow.Add(searchLabel);
-
-                var search = new TextField { name = "model-search-" + kind + "-" + providerId };
-                search.AddToClassList("setting-dropdown-inline");
-                search.tooltip = "Filter this provider's models by name, id or use case.";
-                string key = kind + "/" + providerId;
-                search.SetValueWithoutNotify(searches.TryGetValue(key, out var term) ? term : "");
-                search.RegisterValueChangedCallback(evt =>
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.LabelField("Search", GUILayout.ExpandWidth(false));
+                string newTerm = EditorGUILayout.TextField(term);
+                if (newTerm != term)
                 {
-                    searches[key] = evt.newValue ?? "";
-                    RebuildModelControls(kind, providerId);
-                });
-                searchRow.Add(search);
-                parent.Add(searchRow);
+                    searches[key] = newTerm ?? "";
+                }
+                EditorGUILayout.EndHorizontal();
+                term = newTerm ?? "";
             }
-            var container = new VisualElement();
-            parent.Add(container);
-            modelControls.Add((container, kind, providerId));
-            PopulateModelDropdown(container, kind, providerId);
-        }
 
-        private void PopulateModelDropdown(VisualElement parent, string kind, string providerId)
-        {
             var all = AssetGenModelCatalog.ForProvider(providerId, kind);
-            string key = kind + "/" + providerId;
             string selectedId = AssetGenPrefs.GetSelectedModel(kind, providerId);
             if (string.IsNullOrEmpty(selectedId)) selectedId = AssetGenModelCatalog.DefaultModelId(providerId, kind);
-            string term = searches.TryGetValue(key, out var query) ? query : "";
             var matches = all.Where(m => (m.Id + " " + m.Label + " " + m.UseCase).IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
             // Catalog order puts bundled and eagerly verified models first, so the cap keeps those.
             var models = matches.Take(MenuLimit).ToList();
@@ -476,81 +461,94 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             if (selected != null && !models.Contains(selected)) models.Insert(0, selected);
             if (models.Count == 0)
             {
-                parent.Add(new Label("No models found. Clear the search or refresh the catalog."));
+                EditorGUILayout.LabelField("No models found. Clear the search or refresh the catalog.", EditorStyles.wordWrappedMiniLabel);
                 return;
             }
 
             var choices = new List<string>();
             foreach (ModelEntry m in models) choices.Add(m.Label + " (" + m.Id + ")");
-
             int selectedIndex = selected == null ? choices.Count : models.IndexOf(selected);
             if (selected == null)
                 choices.Add(string.IsNullOrEmpty(selectedId) ? "Choose a model" : "Saved model unavailable — choose another (" + selectedId + ")");
 
-            // Lay the dropdown out like the Format row: a horizontal .setting-row (align-items:center,
-            // min-height:24px) with a .setting-label + a label-less DropdownField. Adding the dropdown
-            // straight into the column row instead makes flex-grow expand it vertically into a huge box.
-            var dropdownRow = new VisualElement();
-            dropdownRow.AddToClassList("setting-row");
+            var displayed = new string[choices.Count];
+            for (int i = 0; i < choices.Count; i++) displayed[i] = MenuItemText(choices[i]);
 
-            var modelLabel = new Label("Model");
-            modelLabel.AddToClassList("setting-label");
-            dropdownRow.Add(modelLabel);
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("Model", GUILayout.ExpandWidth(false));
+            int newIndex = EditorGUILayout.Popup(selectedIndex, displayed);
+            EditorGUILayout.EndHorizontal();
 
-            // The list-item callback goes through the ctor: the property is not public before Unity 6.
-            var dropdown = new DropdownField(choices, 0, null, MenuItemText);
-            dropdown.AddToClassList("setting-dropdown-inline");
-            dropdown.tooltip = "The model generate_* uses for this provider when no explicit model is passed.";
-            dropdown.SetValueWithoutNotify(choices[selectedIndex]);
-            dropdownRow.Add(dropdown);
-
-            parent.Add(dropdownRow);
+            if (newIndex != selectedIndex && newIndex >= 0 && newIndex < models.Count)
+            {
+                ModelEntry picked = models[newIndex];
+                AssetGenPrefs.SetSelectedModel(kind, providerId, picked.Id);
+                verifyErrors.Remove(key);
+                verifiedResults.Remove(key);
+                if (providerId == "fal" || providerId == "openrouter") _ = VerifySelection(picked);
+            }
 
             if (matches.Count > MenuLimit)
             {
-                var more = new Label($"The menu shows {MenuLimit} of {matches.Count} models. Use Search to find the others.");
-                more.AddToClassList("help-text");
-                more.style.whiteSpace = WhiteSpace.Normal;
-                parent.Add(more);
+                EditorGUILayout.LabelField($"The menu shows {MenuLimit} of {matches.Count} models. Use Search to find the others.",
+                    EditorStyles.wordWrappedMiniLabel);
             }
 
-            var meta = new Label();
-            meta.AddToClassList("help-text");
-            meta.style.whiteSpace = WhiteSpace.Normal;
-            parent.Add(meta);
-
-            var caveat = new Label();
-            caveat.AddToClassList("validation-description");
-            caveat.style.whiteSpace = WhiteSpace.Normal;
-            parent.Add(caveat);
-
-            // A null selection hides the caveat box instead of leaving it empty.
-            UpdateModelCaveat(caveat, selected);
-            if (selected != null)
-            {
-                UpdateModelMeta(meta, selected);
-                if (verifyErrors.TryGetValue(key, out var failure) && failure.Id == selected.Id) ShowVerifyError(meta, failure.Error);
-            }
-            else if (string.IsNullOrEmpty(selectedId)) meta.text = "Choose a model before generating.";
-            else meta.text = "Your saved selection is preserved. Choose an available model before generating.";
-
-            dropdown.RegisterValueChangedCallback(evt =>
-            {
-                int index = choices.IndexOf(evt.newValue);
-                if (index < 0 || index >= models.Count) return;
-                ModelEntry picked = models[index];
-                AssetGenPrefs.SetSelectedModel(kind, providerId, picked.Id);
-                verifyErrors.Remove(key);
-                UpdateModelMeta(meta, picked);
-                UpdateModelCaveat(caveat, picked);
-                if (providerId == "fal" || providerId == "openrouter") _ = VerifySelection(picked, meta);
-            });
+            DrawModelMeta(key, selected, selectedId);
         }
 
-        private async Task VerifySelection(ModelEntry picked, Label meta)
+        /// <summary>Draws the metadata line under a model dropdown plus the commercial-use caveat.</summary>
+        private void DrawModelMeta(string key, ModelEntry selected, string selectedId)
+        {
+            string metaText;
+            string tooltip = null;
+            bool isError = false;
+
+            if (selected != null)
+            {
+                if (pendingVerify.Contains(key))
+                {
+                    metaText = "Checking compatibility…";
+                }
+                else if (verifyErrors.TryGetValue(key, out (string Id, string Error) failure) && failure.Id == selected.Id)
+                {
+                    metaText = failure.Error;
+                    isError = true;
+                }
+                else
+                {
+                    ModelEntry entry = verifiedResults.TryGetValue(key, out ModelEntry verified) && verified != null && verified.Id == selected.Id
+                        ? verified
+                        : selected;
+                    metaText = BuildModelMetaText(entry, out tooltip);
+                }
+                if (tooltip == null) tooltip = selected.ModelUrl ?? selected.Id;
+            }
+            else if (string.IsNullOrEmpty(selectedId))
+            {
+                metaText = "Choose a model before generating.";
+            }
+            else
+            {
+                metaText = "Your saved selection is preserved. Choose an available model before generating.";
+            }
+
+            if (!string.IsNullOrEmpty(metaText))
+            {
+                EditorGUILayout.LabelField(new GUIContent(metaText, tooltip), isError ? WarnHelpStyle : EditorStyles.wordWrappedMiniLabel);
+            }
+
+            // A null selection hides the caveat line instead of leaving it empty.
+            if (selected != null && !string.IsNullOrEmpty(selected.CommercialNote))
+            {
+                EditorGUILayout.LabelField(selected.CommercialNote, EditorStyles.wordWrappedMiniLabel);
+            }
+        }
+
+        private async Task VerifySelection(ModelEntry picked)
         {
             string key = picked.Kind + "/" + picked.Provider;
-            meta.text = "Checking compatibility…";
+            pendingVerify.Add(key);
             try
             {
                 string apiKey = null;
@@ -559,14 +557,17 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
                 var verified = picked.Provider == "fal"
                     ? await FalModelCatalog.VerifyForGeneration(picked.Id, picked.Kind, mode, CancellationToken.None, apiKey)
                     : await OpenRouterModelCatalog.VerifyForGeneration(picked.Id, mode, CancellationToken.None);
-                if (AssetGenPrefs.GetSelectedModel(picked.Kind, picked.Provider) == picked.Id) UpdateModelMeta(meta, verified);
+                if (AssetGenPrefs.GetSelectedModel(picked.Kind, picked.Provider) == picked.Id) verifiedResults[key] = verified;
             }
             catch (Exception error)
             {
                 if (AssetGenPrefs.GetSelectedModel(picked.Kind, picked.Provider) != picked.Id) return;
                 string message = "Compatibility check failed: " + SecretRedactor.Scrub(error.Message);
                 verifyErrors[key] = (picked.Id, message);
-                ShowVerifyError(meta, message);
+            }
+            finally
+            {
+                pendingVerify.Remove(key);
             }
         }
 
@@ -576,66 +577,8 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
         /// </summary>
         internal static string MenuItemText(string choice) => choice.Replace('/', '\u2215');
 
-        private static void ShowVerifyError(Label meta, string message)
+        private static string BuildModelMetaText(ModelEntry m, out string tooltip)
         {
-            meta.text = message;
-            meta.AddToClassList("warning-banner-text");
-        }
-
-        /// <summary>
-        /// fal audio / 3D row: no enable toggle and no key field — these kinds reuse the single fal
-        /// key owned by the Image "fal" row. Surfaces that key's presence and a model dropdown.
-        /// </summary>
-        private void AddSharedFalRow(VisualElement parent, string kind, string displayName)
-        {
-            var row = new VisualElement();
-            row.style.marginBottom = 8;
-            row.style.paddingBottom = 8;
-            row.style.borderBottomWidth = 1;
-            row.style.borderBottomColor = new Color(0.3f, 0.3f, 0.3f, 0.3f);
-
-            // Header: name + shared-key status inline to its right. No key field — the fal key is
-            // owned by the 2D fal row.
-            var header = new VisualElement();
-            header.style.flexDirection = FlexDirection.Row;
-            header.style.alignItems = Align.Center;
-            header.style.marginBottom = 2;
-
-            var nameLabel = new Label(displayName);
-            nameLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-            nameLabel.style.flexShrink = 0;
-            header.Add(nameLabel);
-
-            bool hasFal = HasKey("fal");
-            var status = new Label(hasFal ? "key present ✓ (shared with 2D fal)" : "no fal key — set it in 2D Images");
-            status.AddToClassList("help-text");
-            status.style.color = hasFal ? new Color(0.4f, 0.8f, 0.4f) : new Color(0.7f, 0.7f, 0.7f);
-            status.style.flexGrow = 1;
-            status.style.marginLeft = 8;
-            header.Add(status);
-
-            row.Add(header);
-
-            AddModelDropdown(row, kind, "fal");
-
-            parent.Add(row);
-        }
-
-        /// <summary>
-        /// The fal key is shared with the audio and 3D rows, whose "key present" status is snapshotted at
-        /// build time. When the 2D fal key is saved/cleared, schedule a full rebuild so those rows
-        /// reflect it without a manual Refresh. Deferred so we don't destroy the element whose
-        /// callback is still running.
-        /// </summary>
-        private void RebuildIfSharedKey(string id)
-        {
-            if (!string.Equals(id, "fal", StringComparison.OrdinalIgnoreCase)) return;
-            Root?.schedule.Execute(SyncFromPrefs);
-        }
-
-        private static void UpdateModelMeta(Label label, ModelEntry m)
-        {
-            if (label == null || m == null) return;
             var parts = new List<string>();
             if (!string.IsNullOrEmpty(m.UseCase)) parts.Add(m.UseCase);
             if (!string.IsNullOrEmpty(m.PriceLabel)) parts.Add(m.PriceLabel);
@@ -647,30 +590,67 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             if (m.Provider == "fal" || m.Provider == "openrouter")
                 parts.Add(m.VerifiedAt != null ? "compatibility verified" : m.FromRefresh ? "discovered · checked before generation" : "bundled · checked before generation");
             if (!string.IsNullOrEmpty(m.LicenseType)) parts.Add("license: " + m.LicenseType);
-            label.text = string.Join(" · ", parts);
-            label.tooltip = m.ModelUrl ?? m.Id;
-            label.RemoveFromClassList("warning-banner-text");
+            tooltip = m.ModelUrl ?? m.Id;
+            return string.Join(" · ", parts);
         }
 
-        private static void UpdateModelCaveat(Label label, ModelEntry m)
+        /// <summary>
+        /// fal audio / 3D row: no enable toggle and no key field — these kinds reuse the single fal
+        /// key owned by the Image "fal" row. Surfaces that key's presence and a model dropdown.
+        /// </summary>
+        private void DrawSharedFalRow(string kind, string displayName)
         {
-            if (label == null) return;
-            bool show = m != null && !string.IsNullOrEmpty(m.CommercialNote);
-            label.text = show ? m.CommercialNote : string.Empty;
-            label.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField(displayName, BoldLabelStyle, GUILayout.ExpandWidth(false));
+            bool hasFal = HasKey("fal");
+            EditorGUILayout.LabelField(hasFal ? "key present ✓ (shared with 2D fal)" : "no fal key — set it in 2D Images",
+                hasFal ? OkHelpStyle : DimHelpStyle, GUILayout.MinWidth(0));
+            EditorGUILayout.EndHorizontal();
+
+            DrawModelDropdown(kind, "fal");
+
+            GUILayout.Space(6);
         }
 
-        private static void SetStatus(Label label, string text, bool ok)
+        /// <summary>
+        /// The fal key is shared with the audio and 3D rows. When the 2D fal key is saved/cleared,
+        /// queue a deferred SyncFromPrefs so shared state reflects it without a manual Refresh —
+        /// the Toolkit original deferred this through the element scheduler.
+        /// </summary>
+        private void RebuildIfSharedKey(string id)
         {
-            if (label == null)
+            if (!string.Equals(id, "fal", StringComparison.OrdinalIgnoreCase)) return;
+            QueueSyncFromPrefs();
+        }
+
+        /// <summary>Runs SyncFromPrefs once on the next editor update, then unregisters.</summary>
+        private void QueueSyncFromPrefs()
+        {
+            if (syncQueued) return;
+            syncQueued = true;
+            syncHandler = () =>
             {
-                return;
+                EditorApplication.update -= syncHandler;
+                syncHandler = null;
+                syncQueued = false;
+                SyncFromPrefs();
+            };
+            EditorApplication.update += syncHandler;
+        }
+
+        private void UpdateGltfastNotice()
+        {
+            bool anyGlbProviderEnabled = false;
+            foreach (var provider in ModelProviders)
+            {
+                if (AssetGenPrefs.IsProviderEnabled(provider.Id))
+                {
+                    anyGlbProviderEnabled = true;
+                    break;
+                }
             }
 
-            label.text = text;
-            label.style.color = ok
-                ? new Color(0.4f, 0.8f, 0.4f)
-                : new Color(0.7f, 0.7f, 0.7f);
+            showGltfastNotice = anyGlbProviderEnabled && !ModelImportPipeline.IsGltfastAvailable();
         }
 
         private static bool HasKey(string id)
@@ -692,28 +672,36 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             }
         }
 
-        private void UpdateGltfastNotice()
+        private string DrawTextFieldWithPlaceholder(string value, string placeholder, string controlName, string tooltip,
+            params GUILayoutOption[] options)
         {
-            if (gltfastNotice == null)
-            {
-                return;
-            }
+            GUI.SetNextControlName(controlName);
+            string result = EditorGUILayout.TextField(new GUIContent(value, tooltip), options);
+            DrawPlaceholder(placeholder, controlName, value);
+            return result;
+        }
 
-            bool anyGlbProviderEnabled = false;
-            foreach (var entry in modelEnableToggles)
+        private static void DrawPlaceholder(string placeholder, string controlName, string value)
+        {
+            if (!string.IsNullOrEmpty(value) || GUI.GetNameOfFocusedControl() == controlName) return;
+            if (placeholderStyle == null)
             {
-                bool enabled = entry.Toggle != null
-                    ? entry.Toggle.value
-                    : AssetGenPrefs.IsProviderEnabled(entry.Id);
-                if (enabled)
+                placeholderStyle = new GUIStyle(EditorStyles.miniLabel)
                 {
-                    anyGlbProviderEnabled = true;
-                    break;
-                }
+                    fontStyle = FontStyle.Italic,
+                    normal = { textColor = new Color(0.5f, 0.5f, 0.5f) }
+                };
             }
+            Rect rect = GUILayoutUtility.GetLastRect();
+            GUI.Label(new Rect(rect.x + 3f, rect.y + 2f, rect.width - 6f, rect.height - 4f), placeholder, placeholderStyle);
+        }
 
-            bool show = anyGlbProviderEnabled && !ModelImportPipeline.IsGltfastAvailable();
-            gltfastNotice.EnableInClassList("visible", show);
+        private static GUIStyle MakeHelpStyle(Color color)
+        {
+            return new GUIStyle(EditorStyles.wordWrappedMiniLabel)
+            {
+                normal = { textColor = color }
+            };
         }
     }
 }

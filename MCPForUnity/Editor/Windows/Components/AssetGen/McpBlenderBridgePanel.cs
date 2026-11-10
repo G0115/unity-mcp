@@ -8,7 +8,6 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.UIElements;
 
 namespace MCPForUnity.Editor.Windows.Components.AssetGen
 {
@@ -18,121 +17,167 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
     /// Check Updates / Import Selection buttons that call <see cref="BlenderBridgeTool"/>.
     /// Unlike the provider rows, nothing here is a paid API call — it is local file and socket I/O,
     /// awaited off the editor thread so the window never freezes while Blender works.
+    ///
+    /// IMGUI implementation: the owning section calls <see cref="Draw"/> from its OnGUI. All state
+    /// lives in plain fields; text edits commit when their control loses keyboard focus, matching
+    /// the original FocusOutEvent callbacks.
     /// </summary>
     public class McpBlenderBridgePanel
     {
-        private TextField hostField;
-        private TextField portField;
-        private Button testButton;
-        private TextField forkField;
-        private Button forkSelectButton;
-        private Button forkClearButton;
-        private TextField addonsField;
-        private Button addonsSelectButton;
-        private Button addonsClearButton;
-        private Label addonsResolvedLabel;
-        private Label statusLabel;
-        private Label actionStatusLabel;
-        private VisualElement statusDot;
-        private Button syncButton;
-        private Button updatesButton;
-        private Button importButton;
+        private const string HostControl = "blender-host";
+        private const string PortControl = "blender-port";
+        private const string ForkControl = "blender-fork";
+        private const string AddonsControl = "blender-addons";
+
+        private static readonly GUIStyle BoldLabelStyle = new GUIStyle(EditorStyles.label) { fontStyle = FontStyle.Bold };
+        private static readonly GUIStyle OkWrapStyle = MakeWrapStyle(new Color(0.4f, 0.8f, 0.4f));
+        private static readonly GUIStyle DimWrapStyle = MakeWrapStyle(new Color(0.7f, 0.7f, 0.7f));
+        private static readonly GUIStyle ErrorWrapStyle = MakeWrapStyle(new Color(0.85f, 0.2f, 0.2f));
+        private static GUIStyle placeholderStyle;
+
+        // Edit buffers for the text fields; committed to prefs on focus loss.
+        private string hostText = string.Empty;
+        private string portText = string.Empty;
+        private string forkText = string.Empty;
+        private string addonsText = string.Empty;
+
+        private string addonsResolvedText = string.Empty;
+        private bool addonsResolvedOk;
+
+        private string statusText = string.Empty;
+        private string statusTooltip;
+        // 1 = reachable, -1 = failed, 0 = unknown; colours the status dot.
+        private int statusState;
+
+        private string actionStatusText = string.Empty;
+        private bool actionStatusIsError;
+
+        private string lastFocusedControl = string.Empty;
+
         private bool busy;
         private bool probing;
         private bool probeQueued;
 
-        public VisualElement Root { get; }
-
-        public McpBlenderBridgePanel(VisualElement root)
+        public McpBlenderBridgePanel()
         {
-            Root = root;
-            CacheUIElements();
-            InitializeUI();
-            RegisterCallbacks();
+            SyncFromPrefs();
             ProbeConnection();
         }
 
-        /// <summary>Looks up the UXML elements by name.</summary>
-        private void CacheUIElements()
+        /// <summary>Draws the Blender Bridge block in McpAssetGenSection.uxml order.</summary>
+        public void Draw()
         {
-            hostField = Root.Q<TextField>("blender-host");
-            portField = Root.Q<TextField>("blender-port");
-            testButton = Root.Q<Button>("blender-test-button");
-            forkField = Root.Q<TextField>("blender-fork-path");
-            forkSelectButton = Root.Q<Button>("blender-fork-select-button");
-            forkClearButton = Root.Q<Button>("blender-fork-clear-button");
-            addonsField = Root.Q<TextField>("blender-addons-dir");
-            addonsSelectButton = Root.Q<Button>("blender-addons-select-button");
-            addonsClearButton = Root.Q<Button>("blender-addons-clear-button");
-            addonsResolvedLabel = Root.Q<Label>("blender-addons-resolved");
-            statusLabel = Root.Q<Label>("blender-status-label");
-            actionStatusLabel = Root.Q<Label>("blender-action-status");
-            statusDot = Root.Q<VisualElement>("blender-status-dot");
-            syncButton = Root.Q<Button>("blender-sync-button");
-            updatesButton = Root.Q<Button>("blender-updates-button");
-            importButton = Root.Q<Button>("blender-import-button");
-        }
+            CommitFocusLostEdits();
 
-        /// <summary>Sets tooltips and populates the fields from prefs.</summary>
-        private void InitializeUI()
-        {
-            if (hostField != null) hostField.tooltip = "Host the BlenderMCP addon socket listens on (Blender's N panel > BlenderMCP).";
-            if (portField != null) portField.tooltip = $"Addon socket port. Default {BlenderBridgePrefs.DefaultPort}.";
-            if (testButton != null)
-                testButton.tooltip = "Check the addon socket again now (the panel also checks it when it opens). Blender must be running with the addon connected.";
-            if (forkField != null)
-                forkField.tooltip = "Folder of your blender-mcp checkout (the one containing addon.py). Enables Sync Addon and Check Updates.";
-            if (addonsField != null)
-                addonsField.tooltip = "Blender's user addons folder. Leave empty to auto-detect the newest Blender version's scripts/addons.";
-            if (syncButton != null) syncButton.tooltip = "Copy the checkout's addon.py into Blender's addons folder (backs up the old file).";
-            if (updatesButton != null) updatesButton.tooltip = "git fetch the checkout and report how far behind its remotes it is.";
-            if (importButton != null)
-                importButton.tooltip = "Export the objects selected in Blender as GLB, import them under Assets/ and place them in the open scene. " +
-                                       "Needs Blender running with the BlenderMCP addon connected; with nothing selected in Blender it reports an error.";
+            EditorGUILayout.BeginVertical(GUI.skin.box);
 
-            SyncFromPrefs();
-        }
+            // Header: title, connection status dot, status label.
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("Blender Bridge", BoldLabelStyle, GUILayout.ExpandWidth(false));
+            DrawStatusDot();
+            EditorGUILayout.LabelField(new GUIContent(statusText, statusTooltip), EditorStyles.wordWrappedMiniLabel, GUILayout.MinWidth(0));
+            EditorGUILayout.EndHorizontal();
 
-        /// <summary>Wires field persistence and the action buttons.</summary>
-        private void RegisterCallbacks()
-        {
-            hostField?.RegisterCallback<FocusOutEvent>(_ =>
+            EditorGUILayout.LabelField(
+                "Talks directly to the BlenderMCP addon socket in a running Blender (N panel → Connect to MCP server). " +
+                "Powers the blender_bridge tool and Window → MCP for Unity → Blender Bridge. No API keys involved.",
+                EditorStyles.wordWrappedMiniLabel);
+
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.PrefixLabel("Addon Socket:");
+            GUI.SetNextControlName(HostControl);
+            hostText = EditorGUILayout.TextField(
+                new GUIContent(hostText, "Host the BlenderMCP addon socket listens on (Blender's N panel > BlenderMCP)."),
+                GUILayout.Width(140f));
+            GUI.SetNextControlName(PortControl);
+            portText = EditorGUILayout.TextField(
+                new GUIContent(portText, $"Addon socket port. Default {BlenderBridgePrefs.DefaultPort}."),
+                GUILayout.Width(70f));
+            using (new EditorGUI.DisabledScope(busy))
             {
-                string before = BlenderBridgePrefs.Host;
-                BlenderBridgePrefs.Host = hostField.text;
-                hostField.SetValueWithoutNotify(BlenderBridgePrefs.Host);
-                if (BlenderBridgePrefs.Host != before) ProbeConnection();
-            });
+                if (GUILayout.Button(new GUIContent("Test Connection",
+                    "Check the addon socket again now (the panel also checks it when it opens). " +
+                    "Blender must be running with the addon connected."), EditorStyles.miniButton))
+                {
+                    ProbeConnection();
+                }
+            }
+            EditorGUILayout.EndHorizontal();
 
-            // A TextField rather than IntegerField: the latter is editor-only (UnityEditor.UIElements) on the
-            // 2021.3 floor and lives in UnityEngine.UIElements from 2022.1, so a plain text field is the one
-            // control that resolves identically across the supported range.
-            portField?.RegisterCallback<FocusOutEvent>(_ =>
+            EditorGUILayout.LabelField("blender-mcp Checkout (optional):", BoldLabelStyle);
+            EditorGUILayout.LabelField(
+                "Only for blender-mcp addon developers: a local checkout enables Sync Addon and Check Updates. " +
+                "Import and screenshot work without it.",
+                EditorStyles.wordWrappedMiniLabel);
+            EditorGUILayout.BeginHorizontal();
+            forkText = DrawTextFieldWithPlaceholder(forkText, "/path/to/blender-mcp (contains addon.py)", ForkControl,
+                "Folder of your blender-mcp checkout (the one containing addon.py). Enables Sync Addon and Check Updates.",
+                GUILayout.ExpandWidth(true));
+            using (new EditorGUI.DisabledScope(busy))
             {
-                int before = BlenderBridgePrefs.Port;
-                if (int.TryParse(portField.text?.Trim(), out int port)) BlenderBridgePrefs.Port = port;
-                portField.SetValueWithoutNotify(BlenderBridgePrefs.Port.ToString());
-                if (BlenderBridgePrefs.Port != before) ProbeConnection();
-            });
+                if (GUILayout.Button("Select", EditorStyles.miniButton))
+                {
+                    OnSelectFork();
+                }
+                if (GUILayout.Button("Clear", EditorStyles.miniButton))
+                {
+                    SetForkPath(string.Empty);
+                }
+            }
+            EditorGUILayout.EndHorizontal();
 
-            forkField?.RegisterCallback<FocusOutEvent>(_ => SetForkPath(forkField.text));
-            if (forkSelectButton != null) forkSelectButton.clicked += OnSelectFork;
-            if (forkClearButton != null) forkClearButton.clicked += () => SetForkPath(string.Empty);
-
-            addonsField?.RegisterCallback<FocusOutEvent>(_ => SetAddonsDir(addonsField.text));
-            if (addonsSelectButton != null) addonsSelectButton.clicked += OnSelectAddonsDir;
-            if (addonsClearButton != null) addonsClearButton.clicked += () => SetAddonsDir(string.Empty);
-
-            if (testButton != null) testButton.clicked += ProbeConnection;
-            if (syncButton != null) syncButton.clicked += async () =>
+            EditorGUILayout.LabelField("Blender Addons Dir:", BoldLabelStyle);
+            EditorGUILayout.BeginHorizontal();
+            addonsText = DrawTextFieldWithPlaceholder(addonsText, "auto-detect newest Blender user addons folder", AddonsControl,
+                "Blender's user addons folder. Leave empty to auto-detect the newest Blender version's scripts/addons.",
+                GUILayout.ExpandWidth(true));
+            using (new EditorGUI.DisabledScope(busy))
             {
-                await RunActionAsync(new JObject { ["action"] = "sync_addon" });
-                UpdateAddonStatus();
-            };
-            if (updatesButton != null) updatesButton.clicked += async () =>
-                await RunActionAsync(new JObject { ["action"] = "check_updates" });
-            if (importButton != null) importButton.clicked += async () =>
-                await RunActionAsync(new JObject { ["action"] = "import_model", ["selection_only"] = true, ["format"] = "glb" });
+                if (GUILayout.Button("Select", EditorStyles.miniButton))
+                {
+                    OnSelectAddonsDir();
+                }
+                if (GUILayout.Button("Clear", EditorStyles.miniButton))
+                {
+                    SetAddonsDir(string.Empty);
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.LabelField(new GUIContent(addonsResolvedText),
+                addonsResolvedOk ? OkWrapStyle : DimWrapStyle);
+
+            EditorGUILayout.BeginHorizontal();
+            bool configured = BlenderBridgePrefs.IsForkConfigured;
+            using (new EditorGUI.DisabledScope(busy || !configured))
+            {
+                if (GUILayout.Button(new GUIContent("Sync Addon",
+                    "Copy the checkout's addon.py into Blender's addons folder (backs up the old file)."), EditorStyles.miniButton))
+                {
+                    SyncAddon();
+                }
+                if (GUILayout.Button(new GUIContent("Check Updates",
+                    "git fetch the checkout and report how far behind its remotes it is."), EditorStyles.miniButton))
+                {
+                    CheckUpdates();
+                }
+                if (GUILayout.Button(new GUIContent("Import Blender Selection (GLB)",
+                    "Export the objects selected in Blender as GLB, import them under Assets/ and place them in the open scene. " +
+                    "Needs Blender running with the BlenderMCP addon connected; with nothing selected in Blender it reports an error."),
+                    EditorStyles.miniButton))
+                {
+                    ImportSelection();
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+
+            if (!string.IsNullOrEmpty(actionStatusText))
+            {
+                EditorGUILayout.LabelField(actionStatusText,
+                    actionStatusIsError ? ErrorWrapStyle : EditorStyles.wordWrappedMiniLabel);
+            }
+
+            EditorGUILayout.EndVertical();
         }
 
         /// <summary>Re-reads prefs and the on-disk addon state, then re-checks the socket in the background.</summary>
@@ -142,16 +187,61 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             ProbeConnection();
         }
 
-        /// <summary>Reflects prefs into the fields, button states and addon status line.</summary>
+        /// <summary>Reflects prefs into the edit buffers and recomputes the addon status line.</summary>
         private void SyncFromPrefs()
         {
-            hostField?.SetValueWithoutNotify(BlenderBridgePrefs.Host);
-            portField?.SetValueWithoutNotify(BlenderBridgePrefs.Port.ToString());
-            forkField?.SetValueWithoutNotify(BlenderBridgePrefs.ForkPath);
-            addonsField?.SetValueWithoutNotify(BlenderBridgePrefs.AddonsDirOverride);
+            hostText = BlenderBridgePrefs.Host;
+            portText = BlenderBridgePrefs.Port.ToString();
+            forkText = BlenderBridgePrefs.ForkPath;
+            addonsText = BlenderBridgePrefs.AddonsDirOverride;
 
-            UpdateButtonStates();
             UpdateAddonStatus();
+        }
+
+        /// <summary>
+        /// Commits a text edit the moment its control loses keyboard focus — the IMGUI equivalent
+        /// of the original FocusOutEvent callbacks.
+        /// </summary>
+        private void CommitFocusLostEdits()
+        {
+            string focused = GUI.GetNameOfFocusedControl();
+            if (focused == lastFocusedControl) return;
+
+            if (lastFocusedControl == HostControl)
+            {
+                CommitHost();
+            }
+            else if (lastFocusedControl == PortControl)
+            {
+                CommitPort();
+            }
+            else if (lastFocusedControl == ForkControl)
+            {
+                SetForkPath(forkText);
+            }
+            else if (lastFocusedControl == AddonsControl)
+            {
+                SetAddonsDir(addonsText);
+            }
+            lastFocusedControl = focused;
+        }
+
+        private void CommitHost()
+        {
+            string before = BlenderBridgePrefs.Host;
+            BlenderBridgePrefs.Host = hostText;
+            hostText = BlenderBridgePrefs.Host;
+            if (BlenderBridgePrefs.Host != before) ProbeConnection();
+        }
+
+        // A text field rather than an int field: the addon reads it the same way and this keeps a
+        // single code path, as the original UXML TextField did.
+        private void CommitPort()
+        {
+            int before = BlenderBridgePrefs.Port;
+            if (int.TryParse((portText ?? string.Empty).Trim(), out int port)) BlenderBridgePrefs.Port = port;
+            portText = BlenderBridgePrefs.Port.ToString();
+            if (BlenderBridgePrefs.Port != before) ProbeConnection();
         }
 
         /// <summary>Validates and persists the checkout folder; rejects folders without addon.py.</summary>
@@ -162,7 +252,7 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             {
                 EditorUtility.DisplayDialog("Invalid blender-mcp checkout",
                     $"No {BlenderBridgePrefs.AddonFileName} found in:\n{normalized}\n\nPick the folder that contains addon.py.", "OK");
-                forkField?.SetValueWithoutNotify(BlenderBridgePrefs.ForkPath);
+                forkText = BlenderBridgePrefs.ForkPath;
                 return;
             }
             BlenderBridgePrefs.ForkPath = normalized;
@@ -184,7 +274,7 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             if (!string.IsNullOrEmpty(normalized) && !Directory.Exists(normalized))
             {
                 EditorUtility.DisplayDialog("Folder not found", $"Blender addons folder does not exist:\n{normalized}", "OK");
-                addonsField?.SetValueWithoutNotify(BlenderBridgePrefs.AddonsDirOverride);
+                addonsText = BlenderBridgePrefs.AddonsDirOverride;
                 return;
             }
             BlenderBridgePrefs.AddonsDirOverride = normalized;
@@ -205,8 +295,6 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
         /// </summary>
         private void UpdateAddonStatus()
         {
-            if (addonsResolvedLabel == null) return;
-
             string dir = BlenderBridgePrefs.ResolveAddonsDir();
             bool configured = BlenderBridgePrefs.IsForkConfigured;
             string notInstalled = configured ? "BlenderMCP addon: not installed (Sync Addon)" : "BlenderMCP addon: not installed";
@@ -236,8 +324,24 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
                 }
             }
 
-            addonsResolvedLabel.text = text;
-            addonsResolvedLabel.style.color = ok ? new Color(0.4f, 0.8f, 0.4f) : new Color(0.7f, 0.7f, 0.7f);
+            addonsResolvedText = text;
+            addonsResolvedOk = ok;
+        }
+
+        private async void SyncAddon()
+        {
+            await RunActionAsync(new JObject { ["action"] = "sync_addon" });
+            UpdateAddonStatus();
+        }
+
+        private async void CheckUpdates()
+        {
+            await RunActionAsync(new JObject { ["action"] = "check_updates" });
+        }
+
+        private async void ImportSelection()
+        {
+            await RunActionAsync(new JObject { ["action"] = "import_model", ["selection_only"] = true, ["format"] = "glb" });
         }
 
         /// <summary>
@@ -278,18 +382,18 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
         /// <summary>Colours the status dot: green for reachable, red for failed, amber for unknown.</summary>
         private void SetConnectionStatus(bool? ok, string text)
         {
-            if (statusLabel != null)
-            {
-                statusLabel.text = Truncate(text, 240);
-                statusLabel.tooltip = text;
-            }
-            if (statusDot == null) return;
-            statusDot.RemoveFromClassList("valid");
-            statusDot.RemoveFromClassList("invalid");
-            statusDot.RemoveFromClassList("warning");
-            if (ok == true) statusDot.AddToClassList("valid");
-            else if (ok == false) statusDot.AddToClassList("invalid");
-            else statusDot.AddToClassList("warning");
+            statusText = Truncate(text, 240);
+            statusTooltip = text;
+            statusState = ok == true ? 1 : ok == false ? -1 : 0;
+        }
+
+        private void DrawStatusDot()
+        {
+            Rect rect = GUILayoutUtility.GetRect(12f, 16f, GUILayout.Width(12f));
+            Color color = statusState == 1 ? new Color(0.4f, 0.8f, 0.4f)
+                : statusState == -1 ? new Color(0.85f, 0.2f, 0.2f)
+                : new Color(0.9f, 0.7f, 0.2f);
+            EditorGUI.DrawRect(new Rect(rect.x + 1f, rect.y + (rect.height - 8f) / 2f, 8f, 8f), color);
         }
 
         /// <summary>Runs one bridge action without blocking the editor and reports its message.</summary>
@@ -322,30 +426,17 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             return json;
         }
 
-        /// <summary>Disables the action buttons while a bridge call is in flight.</summary>
+        /// <summary>Marks a bridge call as in flight; the action buttons disable while busy.</summary>
         private void SetBusy(bool value)
         {
             busy = value;
-            UpdateButtonStates();
-        }
-
-        /// <summary>Applies busy state and checkout-dependent availability to the buttons.</summary>
-        private void UpdateButtonStates()
-        {
-            bool configured = BlenderBridgePrefs.IsForkConfigured;
-            testButton?.SetEnabled(!busy);
-            importButton?.SetEnabled(!busy);
-            syncButton?.SetEnabled(!busy && configured);
-            updatesButton?.SetEnabled(!busy && configured);
         }
 
         /// <summary>Writes the last action's outcome under the buttons, red on error.</summary>
         private void SetActionStatus(string text, bool isError)
         {
-            if (actionStatusLabel == null) return;
-            actionStatusLabel.text = Truncate(text, 240);
-            if (isError) actionStatusLabel.style.color = new StyleColor(new Color(0.85f, 0.2f, 0.2f));
-            else actionStatusLabel.style.color = StyleKeyword.Null;
+            actionStatusText = Truncate(text, 240);
+            actionStatusIsError = isError;
         }
 
         /// <summary>Caps a message for the status labels.</summary>
@@ -353,6 +444,38 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
         {
             if (string.IsNullOrEmpty(s)) return string.Empty;
             return s.Length <= max ? s : s.Substring(0, max) + "…";
+        }
+
+        private string DrawTextFieldWithPlaceholder(string value, string placeholder, string controlName, string tooltip,
+            params GUILayoutOption[] options)
+        {
+            GUI.SetNextControlName(controlName);
+            string result = EditorGUILayout.TextField(new GUIContent(value, tooltip), options);
+            DrawPlaceholder(placeholder, controlName, value);
+            return result;
+        }
+
+        private static void DrawPlaceholder(string placeholder, string controlName, string value)
+        {
+            if (!string.IsNullOrEmpty(value) || GUI.GetNameOfFocusedControl() == controlName) return;
+            if (placeholderStyle == null)
+            {
+                placeholderStyle = new GUIStyle(EditorStyles.miniLabel)
+                {
+                    fontStyle = FontStyle.Italic,
+                    normal = { textColor = new Color(0.5f, 0.5f, 0.5f) }
+                };
+            }
+            Rect rect = GUILayoutUtility.GetLastRect();
+            GUI.Label(new Rect(rect.x + 3f, rect.y + 2f, rect.width - 6f, rect.height - 4f), placeholder, placeholderStyle);
+        }
+
+        private static GUIStyle MakeWrapStyle(Color color)
+        {
+            return new GUIStyle(EditorStyles.wordWrappedMiniLabel)
+            {
+                normal = { textColor = color }
+            };
         }
     }
 }
