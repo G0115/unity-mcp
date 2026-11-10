@@ -509,7 +509,7 @@ namespace MCPForUnity.Editor.Tools
         /// </summary>
         private static RoslynRuntimeCompiler GetOrCreateRoslynCompiler()
         {
-            var existing = UnityEngine.Object.FindFirstObjectByType<RoslynRuntimeCompiler>();
+            var existing = UnityEngine.Object.FindObjectOfType<RoslynRuntimeCompiler>();
             if (existing != null)
             {
                 return existing;

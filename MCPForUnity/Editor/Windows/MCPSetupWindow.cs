@@ -58,7 +58,11 @@ namespace MCPForUnity.Editor.Windows
             window.Show();
         }
 
-        public void CreateGUI()
+#if UNITY_2021_1_OR_NEWER
+        public void CreateGUI() => BuildUI();
+#endif
+
+        private void BuildUI()
         {
             string basePath = AssetPathUtility.GetMcpPackageRootPath();
 
@@ -123,6 +127,11 @@ namespace MCPForUnity.Editor.Windows
 
         private void OnEnable()
         {
+#if !UNITY_2021_1_OR_NEWER
+            // Pre-2021 has no CreateGUI callback — build the UI here instead.
+            rootVisualElement?.Clear();
+            BuildUI();
+#endif
             if (_dependencyResult == null)
             {
                 _dependencyResult = DependencyManager.CheckAllDependencies();

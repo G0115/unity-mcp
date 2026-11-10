@@ -353,7 +353,7 @@ namespace MCPForUnity.Editor.Tools
                     return null;
                 }
 
-                if (rawResult is not Task task)
+                if (!(rawResult is Task task))
                 {
                     throw new InvalidOperationException(
                         $"Async handler '{commandName}' returned an object that is not a Task"

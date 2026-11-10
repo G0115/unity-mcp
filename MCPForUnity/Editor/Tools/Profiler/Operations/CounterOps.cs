@@ -4,9 +4,11 @@ using System.Linq;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json.Linq;
+using UnityEditor;
+#if UNITY_2020_2_OR_NEWER
 using Unity.Profiling;
 using Unity.Profiling.LowLevel.Unsafe;
-using UnityEditor;
+#endif
 
 namespace MCPForUnity.Editor.Tools.Profiler
 {
@@ -15,6 +17,7 @@ namespace MCPForUnity.Editor.Tools.Profiler
         internal static async Task<object> GetCountersAsync(JObject @params)
         {
             var p = new ToolParams(@params);
+#if UNITY_2020_2_OR_NEWER
             var categoryResult = p.GetRequired("category");
             if (!categoryResult.IsSuccess)
                 return new ErrorResponse(categoryResult.ErrorMessage);
@@ -74,8 +77,14 @@ namespace MCPForUnity.Editor.Tools.Profiler
                 category = categoryName,
                 counters = data,
             });
+#else
+            return new ErrorResponse(
+                "Profiler counters require the ProfilerRecorder API, which is available in Unity 2020.2+. " +
+                "This Editor version does not support counter capture.");
+#endif
         }
 
+#if UNITY_2020_2_OR_NEWER
         private static List<string> GetRequestedCounters(ToolParams p, ProfilerCategory category)
         {
             var explicitCounters = p.GetStringArray("counters");
@@ -91,6 +100,7 @@ namespace MCPForUnity.Editor.Tools.Profiler
                 .OrderBy(n => n)
                 .ToList();
         }
+#endif
 
         private static Task WaitOneFrameAsync()
         {
@@ -109,6 +119,7 @@ namespace MCPForUnity.Editor.Tools.Profiler
             return tcs.Task;
         }
 
+#if UNITY_2020_2_OR_NEWER
         private static readonly string[] ValidCategories = new[]
         {
             "Render", "Scripts", "Memory", "Physics",
@@ -151,5 +162,6 @@ namespace MCPForUnity.Editor.Tools.Profiler
                     return null;
             }
         }
+#endif
     }
 }

@@ -5,8 +5,6 @@ using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
-using Unity.Profiling;
-using Unity.Profiling.LowLevel.Unsafe;
 using UnityEngine.Profiling;
 using UProfiler = UnityEngine.Profiling.Profiler;
 
@@ -41,13 +39,34 @@ namespace MCPForUnity.Editor.Tools.Graphics
         {
             var stats = new Dictionary<string, object>();
 
+#if UNITY_2020_2_OR_NEWER
             foreach (var (counterName, jsonKey) in COUNTER_MAP)
             {
-                using (var recorder = ProfilerRecorder.StartNew(ProfilerCategory.Render, counterName))
+                using (var recorder = Unity.Profiling.ProfilerRecorder.StartNew(Unity.Profiling.ProfilerCategory.Render, counterName))
                 {
                     stats[jsonKey] = recorder.Valid ? recorder.CurrentValue : 0;
                 }
             }
+#else
+            // Legacy fallback: UnityEditor.UnityStats exposes the same render counters
+            // before the ProfilerRecorder API existed (pre-2020.2).
+            stats["draw_calls"] = (long)UnityStats.drawCalls;
+            stats["batches"] = (long)UnityStats.batches;
+            stats["set_pass_calls"] = (long)UnityStats.setPassCalls;
+            stats["triangles"] = (long)UnityStats.triangles;
+            stats["vertices"] = (long)UnityStats.vertices;
+            stats["dynamic_batches"] = (long)UnityStats.dynamicBatches;
+            stats["static_batches"] = (long)UnityStats.staticBatches;
+            stats["static_batched_draw_calls"] = (long)UnityStats.staticBatchedDrawCalls;
+            stats["instanced_batches"] = (long)UnityStats.instancedBatches;
+            stats["shadow_casters"] = (long)UnityStats.shadowCasters;
+            stats["render_textures"] = (long)UnityStats.renderTextureCount;
+            stats["render_textures_bytes"] = (long)UnityStats.renderTextureBytes;
+            stats["used_textures"] = (long)UnityStats.usedTextureCount;
+            stats["used_textures_bytes"] = (long)UnityStats.usedTextureMemorySize;
+            stats["render_target_changes"] = (long)UnityStats.renderTextureChanges;
+            stats["visible_skinned_meshes"] = (long)UnityStats.visibleSkinnedMeshes;
+#endif
 
             return new
             {
@@ -60,20 +79,21 @@ namespace MCPForUnity.Editor.Tools.Graphics
         // === stats_list_counters ===
         internal static object ListCounters(JObject @params)
         {
+#if UNITY_2020_2_OR_NEWER
             var p = new ToolParams(@params);
             string categoryName = p.Get("category");
 
             // Default to "Render" category to avoid massive payloads (all categories = 300K+ chars)
-            ProfilerCategory category = ProfilerCategory.Render;
+            Unity.Profiling.ProfilerCategory category = Unity.Profiling.ProfilerCategory.Render;
             if (!string.IsNullOrEmpty(categoryName))
             {
                 category = TryResolveCategory(categoryName);
             }
 
-            var allHandles = new List<ProfilerRecorderHandle>();
-            ProfilerRecorderHandle.GetAvailable(allHandles);
+            var allHandles = new List<Unity.Profiling.LowLevel.Unsafe.ProfilerRecorderHandle>();
+            Unity.Profiling.LowLevel.Unsafe.ProfilerRecorderHandle.GetAvailable(allHandles);
             var counters = allHandles
-                .Select(h => ProfilerRecorderHandle.GetDescription(h))
+                .Select(h => Unity.Profiling.LowLevel.Unsafe.ProfilerRecorderHandle.GetDescription(h))
                 .Where(d => string.Equals(d.Category.Name, category.Name, StringComparison.OrdinalIgnoreCase))
                 .Select(d => new
                 {
@@ -89,6 +109,22 @@ namespace MCPForUnity.Editor.Tools.Graphics
                 message = $"Found {counters.Count} counters in category '{category.Name}'.",
                 data = new { counters }
             };
+#else
+            // No counters discovery API pre-2020.2 — expose the UnityStats keys instead.
+            var counters = new[] { "draw_calls", "batches", "set_pass_calls", "triangles", "vertices",
+                "dynamic_batches", "static_batches", "static_batched_draw_calls", "instanced_batches",
+                "shadow_casters", "render_textures", "render_textures_bytes", "used_textures",
+                "used_textures_bytes", "render_target_changes", "visible_skinned_meshes" }
+                .Select(n => new { name = n, category = "Render", unit = "Unknown" })
+                .OrderBy(c => c.name).ToList();
+
+            return new
+            {
+                success = true,
+                message = "Found " + counters.Count() + " legacy stats (UnityStats; ProfilerRecorder counters need Unity 2020.2+).",
+                data = new { counters }
+            };
+#endif
         }
 
         // === stats_set_scene_debug_mode ===
@@ -145,29 +181,31 @@ namespace MCPForUnity.Editor.Tools.Graphics
             };
         }
 
+#if UNITY_2020_2_OR_NEWER
         // --- Helper: Try to resolve a ProfilerCategory by name ---
-        private static ProfilerCategory TryResolveCategory(string name)
+        private static Unity.Profiling.ProfilerCategory TryResolveCategory(string name)
         {
             // ProfilerCategory has static properties for well-known categories
             switch (name.ToLowerInvariant())
             {
-                case "render": return ProfilerCategory.Render;
-                case "scripts": return ProfilerCategory.Scripts;
-                case "memory": return ProfilerCategory.Memory;
-                case "physics": return ProfilerCategory.Physics;
-                case "animation": return ProfilerCategory.Animation;
-                case "audio": return ProfilerCategory.Audio;
-                case "lighting": return ProfilerCategory.Lighting;
-                case "network": return ProfilerCategory.Network;
-                case "gui": return ProfilerCategory.Gui;
-                case "ai": return ProfilerCategory.Ai;
-                case "video": return ProfilerCategory.Video;
-                case "loading": return ProfilerCategory.Loading;
-                case "input": return ProfilerCategory.Input;
-                case "vr": return ProfilerCategory.Vr;
-                case "internal": return ProfilerCategory.Internal;
-                default: return ProfilerCategory.Render;
+                case "render": return Unity.Profiling.ProfilerCategory.Render;
+                case "scripts": return Unity.Profiling.ProfilerCategory.Scripts;
+                case "memory": return Unity.Profiling.ProfilerCategory.Memory;
+                case "physics": return Unity.Profiling.ProfilerCategory.Physics;
+                case "animation": return Unity.Profiling.ProfilerCategory.Animation;
+                case "audio": return Unity.Profiling.ProfilerCategory.Audio;
+                case "lighting": return Unity.Profiling.ProfilerCategory.Lighting;
+                case "network": return Unity.Profiling.ProfilerCategory.Network;
+                case "gui": return Unity.Profiling.ProfilerCategory.Gui;
+                case "ai": return Unity.Profiling.ProfilerCategory.Ai;
+                case "video": return Unity.Profiling.ProfilerCategory.Video;
+                case "loading": return Unity.Profiling.ProfilerCategory.Loading;
+                case "input": return Unity.Profiling.ProfilerCategory.Input;
+                case "vr": return Unity.Profiling.ProfilerCategory.Vr;
+                case "internal": return Unity.Profiling.ProfilerCategory.Internal;
+                default: return Unity.Profiling.ProfilerCategory.Render;
             }
         }
+#endif
     }
 }

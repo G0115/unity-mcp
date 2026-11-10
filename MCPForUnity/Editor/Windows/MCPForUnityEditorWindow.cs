@@ -144,9 +144,13 @@ namespace MCPForUnity.Editor.Windows
             }
         }
 
-        public void CreateGUI()
+#if UNITY_2021_1_OR_NEWER
+        public void CreateGUI() => BuildUI();
+#endif
+
+        private void BuildUI()
         {
-            // Guard against repeated CreateGUI calls (e.g., domain reloads)
+            // Guard against repeated UI builds (e.g., domain reloads)
             if (guiCreated)
                 return;
 
@@ -577,6 +581,12 @@ namespace MCPForUnity.Editor.Windows
         {
             EditorApplication.update += OnEditorUpdate;
             OpenWindows.Add(this);
+#if !UNITY_2021_1_OR_NEWER
+            // Pre-2021 has no CreateGUI callback — build the UI here instead.
+            // Clear stale children first: rootVisualElement survives domain reloads.
+            rootVisualElement?.Clear();
+            BuildUI();
+#endif
         }
 
         private void OnDisable()

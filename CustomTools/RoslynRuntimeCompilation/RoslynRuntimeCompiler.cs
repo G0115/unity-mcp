@@ -700,7 +700,7 @@ public static class RoslynMCPHelper
     {
         if (_compiler == null || _compiler.gameObject == null)
         {
-            var existing = UnityEngine.Object.FindFirstObjectByType<RoslynRuntimeCompiler>();
+            var existing = UnityEngine.Object.FindObjectOfType<RoslynRuntimeCompiler>();
             if (existing != null)
             {
                 _compiler = existing;
@@ -875,7 +875,7 @@ public class RoslynRuntimeCompilerWindow : EditorWindow
     void OnEnable()
     {
         // try to find an existing helper in scene
-        helperInScene = FindFirstObjectByType<RoslynRuntimeCompiler>(FindObjectsInactive.Include);
+        helperInScene = (RoslynRuntimeCompiler)UnityEngine.Object.FindObjectOfType(typeof(RoslynRuntimeCompiler), true);
         if (helperInScene == null)
         {
             var go = new GameObject("RoslynRuntimeHelper");
@@ -923,7 +923,7 @@ public class RoslynRuntimeCompilerWindow : EditorWindow
         if (helperInScene == null || helperInScene.gameObject == null)
         {
             // Try to find existing helper first
-            helperInScene = FindFirstObjectByType<RoslynRuntimeCompiler>(FindObjectsInactive.Include);
+            helperInScene = (RoslynRuntimeCompiler)UnityEngine.Object.FindObjectOfType(typeof(RoslynRuntimeCompiler), true);
             
             // If still not found, create a new one
             if (helperInScene == null)

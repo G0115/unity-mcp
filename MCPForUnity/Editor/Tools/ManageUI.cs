@@ -16,6 +16,10 @@ namespace MCPForUnity.Editor.Tools
     [McpForUnityTool("manage_ui", AutoRegister = false, Group = "ui")]
     public static class ManageUI
     {
+        /// <summary>Shown by UIDocument-dependent actions when the UI Toolkit runtime is unavailable (pre-2021.1).</summary>
+        internal const string UiToolkitUnsupported =
+            "UI Toolkit runtime (UIDocument/PanelSettings) requires Unity 2021.1+ and is not available in this Unity version.";
+
         private static readonly HashSet<string> ValidExtensions = new(StringComparer.OrdinalIgnoreCase)
         {
             ".uxml", ".uss"
@@ -298,6 +302,7 @@ namespace MCPForUnity.Editor.Tools
 
         private static object AttachUIDocument(JObject @params)
         {
+#if UNITY_2021_1_OR_NEWER
             var p = new ToolParams(@params);
 
             var targetResult = p.GetRequired("target");
@@ -390,10 +395,14 @@ namespace MCPForUnity.Editor.Tools
                     panelSettings = AssetDatabase.GetAssetPath(panelSettings),
                     sortOrder
                 });
+#else
+            return new ErrorResponse(UiToolkitUnsupported);
+#endif
         }
 
         private static object CreatePanelSettings(JObject @params)
         {
+#if UNITY_2021_1_OR_NEWER
             var p = new ToolParams(@params);
 
             var pathResult = p.GetRequired("path");
@@ -457,10 +466,14 @@ namespace MCPForUnity.Editor.Tools
 
             return new SuccessResponse($"Created PanelSettings at {path}",
                 new { path, applied = changes });
+#else
+            return new ErrorResponse(UiToolkitUnsupported);
+#endif
         }
 
         private static object UpdatePanelSettings(JObject @params)
         {
+#if UNITY_2021_1_OR_NEWER
             var p = new ToolParams(@params);
 
             var pathResult = p.GetRequired("path");
@@ -479,7 +492,7 @@ namespace MCPForUnity.Editor.Tools
                 return new ErrorResponse($"No PanelSettings found at {path}");
 
             JToken settingsToken = p.GetRaw("settings");
-            if (settingsToken is not JObject settingsObj || settingsObj.Count == 0)
+            if (!(settingsToken is JObject settingsObj) || settingsObj.Count == 0)
                 return new ErrorResponse("'settings' dict is required with at least one property to update.");
 
             var changes = new List<string>();
@@ -493,10 +506,14 @@ namespace MCPForUnity.Editor.Tools
 
             return new SuccessResponse($"Updated PanelSettings at {path}",
                 new { path, applied = changes });
+#else
+            return new ErrorResponse(UiToolkitUnsupported);
+#endif
         }
 
         private static PanelSettings CreateDefaultPanelSettings(string path)
         {
+#if UNITY_2021_1_OR_NEWER
             string dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir))
             {
@@ -507,6 +524,9 @@ namespace MCPForUnity.Editor.Tools
             AssetDatabase.CreateAsset(ps, path);
             AssetDatabase.SaveAssets();
             return ps;
+#else
+            return null;
+#endif
         }
 
         /// <summary>
@@ -520,6 +540,7 @@ namespace MCPForUnity.Editor.Tools
         /// </summary>
         private static void ApplyPanelSettingsProperties(PanelSettings ps, JObject settings, List<string> changes)
         {
+#if UNITY_2021_1_OR_NEWER
             foreach (var prop in settings)
             {
                 string key = NormalizeKey(prop.Key);
@@ -602,10 +623,12 @@ namespace MCPForUnity.Editor.Tools
                     // unknown keys are silently ignored
                 }
             }
+#endif
         }
 
         private static void ApplyDynamicAtlasSettings(PanelSettings ps, JObject da, List<string> changes)
         {
+#if UNITY_2021_1_OR_NEWER
             var daCopy = ps.dynamicAtlasSettings;
 
             if (da["minAtlasSize"] != null && TryInt(da["minAtlasSize"], out int minSize))
@@ -619,6 +642,7 @@ namespace MCPForUnity.Editor.Tools
 
             ps.dynamicAtlasSettings = daCopy;
             changes.Add("dynamicAtlasSettings");
+#endif
         }
 
         // ── Tiny helpers to keep the switch compact ─────────────────────────
@@ -706,6 +730,7 @@ namespace MCPForUnity.Editor.Tools
 
         private static object GetVisualTree(JObject @params)
         {
+#if UNITY_2021_1_OR_NEWER
             var p = new ToolParams(@params);
 
             var targetResult = p.GetRequired("target");
@@ -752,6 +777,9 @@ namespace MCPForUnity.Editor.Tools
                         : null,
                     tree
                 });
+#else
+            return new ErrorResponse(UiToolkitUnsupported);
+#endif
         }
 
         private static object SerializeVisualElement(VisualElement element, int depth, int maxDepth)
@@ -956,6 +984,7 @@ namespace MCPForUnity.Editor.Tools
                     });
             }
             // ── End play-mode branch ────────────────────────────────────────────────
+#if UNITY_2021_1_OR_NEWER
 
             // Resolve UIDocument
             UIDocument uiDoc = null;
@@ -1184,6 +1213,9 @@ namespace MCPForUnity.Editor.Tools
                         UnityEngine.Object.DestroyImmediate(tempPs, true);
                 }
             }
+#else
+            return new ErrorResponse(UiToolkitUnsupported);
+#endif
         }
 
         // ---- Link Stylesheet ----
@@ -1388,6 +1420,7 @@ namespace MCPForUnity.Editor.Tools
 
         private static object DetachUIDocument(JObject @params)
         {
+#if UNITY_2021_1_OR_NEWER
             var p = new ToolParams(@params);
 
             var targetResult = p.GetRequired("target");
@@ -1420,12 +1453,16 @@ namespace MCPForUnity.Editor.Tools
                     gameObject = go.name,
                     removedSourceAsset = sourceAsset,
                 });
+#else
+            return new ErrorResponse(UiToolkitUnsupported);
+#endif
         }
 
         // ---- Modify Visual Element ----
 
         private static object ModifyVisualElement(JObject @params)
         {
+#if UNITY_2021_1_OR_NEWER
             var p = new ToolParams(@params);
 
             var targetResult = p.GetRequired("target");
@@ -1579,6 +1616,9 @@ namespace MCPForUnity.Editor.Tools
             return new SuccessResponse(
                 $"Modified element '{elementName}' on {go.name}: {string.Join(", ", applied)}",
                 responseData);
+#else
+            return new ErrorResponse(UiToolkitUnsupported);
+#endif
         }
 
         private static void ApplyInlineStyles(VisualElement element, JObject styleObj, List<string> modifications)

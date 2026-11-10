@@ -609,7 +609,7 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
             {
                 var client = configurators[selectedClientIndex];
                 // Force immediate for non-Claude CLI, or when explicitly requested
-                bool shouldForceImmediate = forceImmediate || client is not ClaudeCliMcpConfigurator;
+                bool shouldForceImmediate = forceImmediate || !(client is ClaudeCliMcpConfigurator);
                 RefreshClientStatus(client, shouldForceImmediate);
                 UpdateManualConfiguration();
                 UpdateClaudeCliPathVisibility();

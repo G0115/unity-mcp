@@ -67,7 +67,7 @@ namespace MCPForUnity.Editor.Tools
 
             foreach (var token in commandsToken)
             {
-                if (token is not JObject commandObj)
+                if (!(token is JObject commandObj))
                 {
                     invocationFailureCount++;
                     anyCommandFailed = true;

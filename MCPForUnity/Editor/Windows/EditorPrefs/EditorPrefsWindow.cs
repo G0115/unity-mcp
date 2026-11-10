@@ -91,7 +91,18 @@ namespace MCPForUnity.Editor.Windows
             window.Show();
         }
 
-        public void CreateGUI()
+#if UNITY_2021_1_OR_NEWER
+        public void CreateGUI() => BuildUI();
+#else
+        private void OnEnable()
+        {
+            // Pre-2021 has no CreateGUI callback — build the UI here instead.
+            rootVisualElement?.Clear();
+            BuildUI();
+        }
+#endif
+
+        private void BuildUI()
         {
             // Clear search filter on GUI recreation to avoid stale filtered results
             searchFilter = "";
