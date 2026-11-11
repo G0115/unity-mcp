@@ -200,8 +200,10 @@ namespace MCPForUnity.Editor.Dependencies.PlatformDetectors
             try
             {
                 string augmentedPath = BuildAugmentedPath();
-                // Try to list installed python versions via uvx
-                if (!ExecPath.TryRun("uv", "python list", null, out string stdout, out string stderr, 5000, augmentedPath))
+                // Try to list installed python versions via uvx. 15s, not 5s: a cold-started
+                // uv can take >5s under Windows Defender first-scan, which made the fallback
+                // time out and report "Python not found" even with a uv-managed interpreter.
+                if (!ExecPath.TryRun("uv", "python list", null, out string stdout, out string stderr, 15000, augmentedPath))
                     return false;
 
                 var lines = stdout.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -248,8 +250,9 @@ namespace MCPForUnity.Editor.Dependencies.PlatformDetectors
                     commandToRun = resolvedPath;
                 }
 
-                // Run 'python --version' to get the version
-                if (!ExecPath.TryRun(commandToRun, "--version", null, out string stdout, out string stderr, 5000, augmentedPath))
+                // Run 'python --version' to get the version (15s: cold-started interpreters
+                // can exceed 5s under Defender first-scan)
+                if (!ExecPath.TryRun(commandToRun, "--version", null, out string stdout, out string stderr, 15000, augmentedPath))
                     return false;
 
                 // Check stdout first, then stderr (some Python distributions output to stderr)
